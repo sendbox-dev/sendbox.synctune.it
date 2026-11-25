@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Package registry proxy | SendBox docs</title>
+  <meta name="description" content="The package registry proxy is a mandatory pre-delivery control for configured npm registries. It prevents the untrusted workload from receiving package…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Package registry proxy | SendBox docs">
+  <meta property="og:description" content="The package registry proxy is a mandatory pre-delivery control for configured npm registries. It prevents the untrusted workload from receiving package…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/package-registry-proxy/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/package-registry-proxy/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Package registry proxy</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="package-registry-proxy-architecture">Package registry proxy architecture</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#purpose">Purpose</a></li>
+<li><a href="#process-and-network-topology">Process and network topology</a></li>
+<li><a href="#startup-and-teardown">Startup and teardown</a></li>
+<li><a href="#request-path">Request path</a></li>
+<li><a href="#authenticated-report-lifecycle">Authenticated report lifecycle</a></li>
+<li><a href="#adapter-boundary">Adapter boundary</a></li>
+</ol>
+</nav>
+<h2 id="purpose">Purpose</h2>
+<p>The package registry proxy is a mandatory pre-delivery control for configured
+npm registries. It prevents the untrusted workload from receiving package
+artifact bytes until a trusted service has verified identity and integrity,
+inspected the archive without execution, evaluated package policy, and recorded
+a machine-readable verdict.</p>
+<p>The implementation is split across existing trust boundaries:</p>
+<ul>
+<li><code>sendbox-policy</code> owns strict package policy, finding actions, exceptions, and
+resource limits.</li>
+<li><code>sendbox-registry</code> owns adapter contracts, npm behavior, verification,
+inspection, deterministic verdicts, cache records, and reports.</li>
+<li><code>sendbox-egress</code> owns the three-cgroup network topology and kernel rules.</li>
+<li><code>sendbox-host</code> resolves isolated registry credentials, mounts private cache
+state, revalidates reports, and persists audit evidence.</li>
+<li><code>sendbox-agent</code>, <code>sendbox-protocol</code>, and <code>sendbox-guest</code> own authenticated
+bootstrap, service readiness, launch ordering, and terminal report retrieval.</li>
+</ul>
+<h2 id="process-and-network-topology">Process and network topology</h2>
+<pre tabindex="0"><code class="language-text">untrusted workload cgroup
+  |-- HTTP 127.0.0.1:14873 ----------------------+
+  |-- SOCKS 127.0.0.1:15080 --&gt; public gateway --+--&gt; policy-approved network
+  `-- DNS   127.0.0.1:15053 --&gt; DNS gateway -----+
+
+registry proxy cgroup
+  `-- SOCKS 127.0.0.1:15081 --&gt; trusted gateway ----&gt; configured npm upstream
+
+broker cgroup
+  `-- only marked external sockets are accepted by nftables</code></pre>
+<p>The workload can reach the public SOCKS/DNS listeners and npm proxy, but not
+the registry-only SOCKS listener. The registry proxy can reach only the trusted
+loopback SOCKS listener, not the public listener or any external destination.
+Only gateway processes enter the broker cgroup and set the fixed <code>SO_MARK</code>;
+the registry proxy runs as UID/GID 65532, receives no mark capability, clears
+capabilities, and applies a bounded seccomp/resource profile.</p>
+<p>When package analysis is enabled, the public gateway uses an effective network
+policy with the npm upstream denied. The trusted registry gateway retains the
+original policy and is reachable only from the registry cgroup. A compromised
+workload therefore cannot bypass the proxy with an npm CLI override or direct
+tarball URL, and a compromised proxy cannot dial the network without the
+trusted gateway.</p>
+<p>The egress instance identifier remains at most 24 lowercase
+<code>[a-z0-9_]</code> characters. The nftables table is <code>sbxeg_&lt;instance_id&gt;</code>, keeping it
+within the kernel's 31-character table-name limit.</p>
+<h2 id="startup-and-teardown">Startup and teardown</h2>
+<ol>
+<li>The host validates that package policy has exactly one npm registry, that
+the runtime supports mandatory egress services, and that registry credential
+references do not overlap workload secrets.</li>
+<li>The host creates or validates the private package cache and includes package
+policy, ports, paths, proxy identity, and zeroizing credentials in the
+encrypted authenticated bootstrap.</li>
+<li>The guest starts cgroup/nft enforcement before the workload, then starts the
+public gateway, trusted registry gateway, and isolated registry proxy.</li>
+<li>Readiness requires every mandatory service. Any missing listener, invalid
+policy, credential mismatch, privilege-drop failure, or report path failure
+aborts launch.</li>
+<li>npm environment variables are fixed to the local proxy and script execution
+is disabled before the exact workload argv starts.</li>
+<li>After the terminal response, the agent fetches the package report once,
+then performs graceful close and teardown.</li>
+<li>The host validates and persists the report before marking the security
+session complete.</li>
+</ol>
+<p>Early exit of a mandatory process is fatal. Cleanup removes nftables state,
+cgroups, runtime credentials, sockets, and rejected quarantine files.</p>
+<h2 id="request-path">Request path</h2>
+<p>Packument requests are fetched through the trusted SOCKS gateway with bounded
+metadata size and timeout. The npm adapter validates the response and replaces
+each <code>dist.tarball</code> with an opaque proxy route. The route maps internally to an
+artifact descriptor bound to the resolved package name, version, upstream URL,
+integrity claims, signatures, provenance references, and metadata revision.</p>
+<p>An artifact request acquires a per-route filesystem lock. A valid exact cache
+entry is returned immediately. Otherwise the proxy:</p>
+<ol>
+<li>downloads to a private quarantine file;</li>
+<li>computes the content digest and verifies npm integrity claims;</li>
+<li>fetches and verifies bounded trust metadata and advertised evidence;</li>
+<li>normalizes <code>package.json</code>, enumerates gzip/tar entries, and scans risks;</li>
+<li>evaluates normalized findings against canonical package policy;</li>
+<li>atomically writes the verdict record; and</li>
+<li>promotes only allowed bytes to the approved content-addressed store.</li>
+</ol>
+<p>The cache key is the ecosystem, artifact digest, scanner version, canonical
+policy digest, and trust-metadata digest. This makes cache invalidation
+implicit and reproducible. Filesystem locks allow concurrent requests and
+separate sessions to share one completed analysis without trusting a partial
+record.</p>
+<h2 id="authenticated-report-lifecycle">Authenticated report lifecycle</h2>
+<p>The registry proxy updates a bounded owner-only report as verdicts complete.
+The report is not streamed through workload output.</p>
+<p><code>package.report</code> uses authenticated request ID <code>2</code> and schema version <code>1</code>. It is
+legal only after the launch request's terminal response and before graceful
+close, and it can succeed only once. The request carries the maximum accepted
+byte count. The response carries the exact JSON string and a
+<code>sha256:&lt;lowercase-hex&gt;</code> digest.</p>
+<p>The guest reads the report descriptor-relatively without following symlinks and
+requires the expected owner, group, mode <code>0600</code>, regular-file type, and link
+count. The agent verifies the transport digest. The host then independently
+checks the byte limit, digest, strict schema, summary counts, canonical JSON,
+session ID, and canonical package-policy digest before atomically persisting
+the report under host session state.</p>
+<p>This terminal-only retrieval keeps verdict evidence correlated with the
+authenticated run while avoiding report races during package installation.</p>
+<h2 id="adapter-boundary">Adapter boundary</h2>
+<p><code>RegistryAdapter</code> is capability-oriented rather than npm-shaped. It composes
+<code>UpstreamClient</code> for bounded, credential-aware retrieval and
+<code>PackageProvenanceVerifier</code> for ecosystem evidence. It covers identity/version
+resolution, metadata rewriting, artifact retrieval, trust metadata, integrity
+and provenance verification, manifest normalization, archive/layer
+enumeration, and ecosystem risk inspection.</p>
+<p>The shared cache, policy evaluator, and report model consume only normalized
+identities, evidence, entries, manifests, and findings. PyPI, Cargo, Go
+modules, Maven, and OCI adapters can therefore implement different metadata
+and artifact models without changing the core decision path. OCI declares
+layered artifacts; archive-oriented ecosystems enumerate their native package
+containers. The npm adapter is currently the only runtime implementation.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/package-registry-proxy.md"><code>docs/architecture/package-registry-proxy.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/package-registry-proxy.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../mcp-broker/"><span class="pager-label">Previous</span> MCP broker</a>
+<a class="pager-next" href="../secrets-and-credential-broker/"><span class="pager-label">Next</span> Secrets and credential broker</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="./" aria-current="page">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

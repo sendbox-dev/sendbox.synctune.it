@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contributing | SendBox docs</title>
+  <meta name="description" content="Source setup, checks, documentation conventions and release procedures.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Contributing | SendBox docs">
+  <meta property="og:description" content="Source setup, checks, documentation conventions and release procedures.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/contributing/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/contributing/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Contributing</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Contribute</p>
+<h1 id="contributing-to-sendbox">Contributing to SendBox</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#source-setup">Source setup</a></li>
+<li><a href="#checks">Checks</a></li>
+<li><a href="#publishing-releases">Publishing releases</a></li>
+</ol>
+</nav>
+<p>Contributions are welcome. For larger changes, open an issue first to discuss
+the approach. The <a href="../roadmap/">roadmap</a> tracks planned work. Report
+security vulnerabilities privately as described in the
+<a href="../security-policy/">security policy</a>, not in issues or pull requests.</p>
+<h2 id="source-setup">Source setup</h2>
+<p>Follow the <a href="../installation/#requirements">source-build requirements</a>, then fork
+and clone the repository and create a feature branch:</p>
+<pre tabindex="0"><code class="language-bash">git clone https://github.com/YOUR_USERNAME/sendbox.git
+cd sendbox
+git checkout -b feature/my-change
+make build</code></pre>
+<p>The toolchain is pinned in <code>rust-toolchain.toml</code>. Building the host binary does
+not provision a runtime or install a signed guest bundle; see
+<a href="../installation/">installation</a> for those steps.</p>
+<h2 id="checks">Checks</h2>
+<p>Before opening a pull request for code changes, run:</p>
+<pre tabindex="0"><code class="language-bash">make lint
+make test
+make release
+make audit</code></pre>
+<p><code>make lint</code> checks formatting and Clippy and compiles every standalone fuzz
+workspace with its committed lockfile. <code>make audit</code> requires <code>cargo-audit</code>.
+Runtime-specific live qualification needs a prepared host; see
+<a href="../qualification/">qualification</a> and the individual runtime guides.</p>
+<p>CI runs portable checks and build/install qualification in parallel on macOS
+and Linux, with fail-fast matrices. Rust dependency caches are isolated by
+toolchain, platform, lockfiles, and job task; every check still runs. Standalone
+fuzz workspaces share the root target directory in CI instead of recompiling
+their common dependencies into separate target directories. The <code>cargo-audit</code>
+executable is cached, but every run refreshes and checks the advisory database.
+The portable-check jobs also run the credential-free cold-start diagnostic
+harness's Python standard-library tests. Live VM qualification remains an
+explicit prepared-host check; see <a href="../dns-cold-start/">cold-start DNS diagnostics</a>.
+The diagnostic tests explicitly select Python <strong>3.15.1</strong>, rather than the
+runner's preinstalled <code>python3</code>. No third-party Python packages are required.
+This host-side selection does not change the standalone diagnostic workload
+image or add Python to production Rust guest images. Homebrew updater tests
+belong to the tap that owns formula updates, not this source repository.</p>
+<p>CI preloads the exact Python release asset through
+GitHub's release-asset API using <code>scripts/setup-ci-python.sh</code>, with SHA-256
+verification and bounded retries before the normal <code>setup-python</code> action selects
+it. The workflow passes its <code>GITHUB_TOKEN</code> so the request is not subject to the
+anonymous 60-requests-per-hour limit shared by runner IP addresses. The helper supports macOS arm64 and Ubuntu x64, including matching packages
+for Ubuntu 22.04, 24.04, and 26.04. Update the workflow version, helper version,
+asset IDs, and checksums together when updating Python.</p>
+<p>Run the diagnostic harness tests locally without installing or starting
+SendBox; substitute <code>python3.15</code> for <code>python3</code> to reproduce CI's selected minor
+version. The release helper separately requires Python 3.11 or newer:</p>
+<pre tabindex="0"><code class="language-bash">PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s test-fixtures/dns-cold-start -p 'test_*.py'</code></pre>
+<p>The CLI integration suite also exercises release creation and same-version
+recovery using temporary local Git repositories, offline Cargo fixtures, and
+mocked GitHub commands. These tests never publish a release or contact GitHub:</p>
+<pre tabindex="0"><code class="language-bash">cargo test --locked -p sendbox-cli --test release_script</code></pre>
+<p>Hosted Apple, Hyperlight, and qualification checks also cache Rust dependencies;
+qualification caches both its standalone workspace and the root CLI workspace.
+These caches restore on pull requests but save only on <code>main</code>, avoiding another
+set of large target caches for every PR.
+These jobs explicitly budget three workers on macOS and four on Linux, matching
+the standard public runners without reducing their existing CPU parallelism or
+changing the prepared self-hosted live gates. The Apple adapter spike, egress
+spike, production egress, and production exec workflows share CI's platform-
+and version-keyed <code>cargo-audit</code> executable cache. Cache hits skip only installing
+the audit tool, never the dependency audit or advisory database refresh.</p>
+<p>Generic hosted x64 Linux jobs use <code>ubuntu-latest</code>; generic Apple-silicon jobs
+use <code>macos-latest</code>. Matrix <code>os</code> values and existing job names remain stable
+status-check identifiers; the separate <code>runner</code> field selects the current
+image. Version strings in those check names are not runner pins.
+Native Linux arm64 jobs retain <code>ubuntu-24.04-arm</code>, because GitHub has no
+documented <code>ubuntu-latest-arm</code> alias. Kernel-specific BPF, exec and egress live
+proofs keep their qualified Ubuntu 24.04 hosts, and prepared self-hosted gates
+keep their hardware labels.</p>
+<p>Release CLI builds retain Ubuntu 24.04 for their glibc-linked Linux binaries.
+The macOS producer uses <code>macos-latest</code> but explicitly retains the existing
+<code>MACOSX_DEPLOYMENT_TARGET=11.0</code> binary floor and verifies arm64/Mach-O metadata.
+This does not change the Apple runtime's macOS 26+ requirement. Packaging and
+publication jobs can follow the hosted aliases without relinking these bytes.</p>
+<p>Guest artifact CI runs the two clean builds for each architecture in separate
+parallel jobs and compares their outputs before publishing the verified bundle.
+Changes to the shared egress crate also select this workflow because its DNS
+resolver is linked into the guest, even when no guest entrypoint changes.
+See <a href="../architecture/guest-artifact-bundles/#continuous-integration">guest artifact CI</a>
+for cache boundaries and the automatic privileged BPF smoke tests.</p>
+<p>For documentation-only changes, check examples, relative links, and heading
+anchors. Keep the root README focused on evaluating the project and starting a
+session; put detailed operational and architecture material under <code>docs/</code> and
+link it from the <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/README.md">documentation index</a>.</p>
+<h2 id="publishing-releases">Publishing releases</h2>
+<p>Maintainers publish tag-triggered releases with:</p>
+<pre tabindex="0"><code class="language-bash">./scripts/release.sh VERSION</code></pre>
+<p><code>make release</code> only builds locally. See
+<a href="../installation/#publishing-a-release">publishing a release</a> for prerequisites,
+version-bump review, CI, tags, and recovery behavior. After preflight checks, the
+script switches to <code>main</code> and pulls fast-forward-only before release operations.
+Retry a failed attempt with the same command and version; existing release tags
+are not moved or replaced.</p>
+<p>Homebrew updates reuse the published archives and are owned by the existing
+tap; SendBox does not compile a separate Homebrew binary or write tap branches.
+Release builds cache Rust dependencies by toolchain/platform/lockfile and
+reuse each signed guest artifact for the host packages and publication.
+Native CLI tests and release builds run alongside the independent signed guest
+builds. Packaging waits for both and restores the tested CLI from a same-run,
+commit- and platform-specific archive, verifying its checksum and executable
+mode rather than compiling it again. These internal CLI archives keep the
+repository's default artifact retention for failed-job retries and are not
+included in the public <code>release-*</code> asset set.
+Clean guest-container builds and the existing macOS/Linux checks remain in
+place. See <a href="../installation/#stable-homebrew-updates">stable Homebrew updates</a>
+for the pending central updater, native CI/review gates, activation, and recovery.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/contributing.md"><code>docs/contributing.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/contributing.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../security-records-migration/"><span class="pager-label">Previous</span> Security-record migration</a>
+<a class="pager-next" href="../qualification/"><span class="pager-label">Next</span> Qualification</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="./" aria-current="page">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

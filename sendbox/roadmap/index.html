@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roadmap | SendBox docs</title>
+  <meta name="description" content="Future proposals and historical designs.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Roadmap | SendBox docs">
+  <meta property="og:description" content="Future proposals and historical designs.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/roadmap/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/roadmap/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Roadmap</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Contribute</p>
+<h1 id="sendbox-roadmap">SendBox Roadmap</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#phase-1--foundation-and-direct-vm-runtimes--current">Phase 1 — Foundation and Direct VM Runtimes ✅ (Current)</a></li>
+<li><a href="#phase-2--kubernetes-orchestration-kind">Phase 2 — Kubernetes Orchestration (KinD)</a></li>
+<li><a href="#phase-3--multi-agent-tool-compatibility">Phase 3 — Multi-Agent Tool Compatibility</a></li>
+<li><a href="#phase-4--advanced-features">Phase 4 — Advanced Features</a></li>
+<li><a href="#timeline">Timeline</a></li>
+<li><a href="#contributing">Contributing</a></li>
+</ol>
+</nav>
+<blockquote>
+<p>Living document tracking planned features, platform expansion, and ecosystem integrations.</p>
+</blockquote>
+<hr>
+<h2 id="phase-1--foundation-and-direct-vm-runtimes--current">Phase 1 — Foundation and Direct VM Runtimes ✅ (Current)</h2>
+<p>SendBox supports direct hardware-isolated runtimes on macOS and Linux: Apple's <a href="https://github.com/apple/containerization">Containerization</a> framework on Apple silicon, and <a href="https://katacontainers.io/">Kata Containers</a> through nerdctl/containerd on Linux.</p>
+<div class="table-scroll" role="group" aria-label="Phase 1 — Foundation and Direct VM Runtimes ✅ (Current) table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Feature</th><th scope="col">Status</th></tr></thead>
+<tbody>
+<tr><td>Lightweight Linux VMs via Virtualization.framework</td><td>✅ Done</td></tr>
+<tr><td>Kata Containers runtime via nerdctl/containerd</td><td>✅ Done</td></tr>
+<tr><td>RuntimeProvider abstraction and <code>--runtime</code> selection</td><td>✅ Done</td></tr>
+<tr><td>Command allowlist / denylist engine</td><td>✅ Done</td></tr>
+<tr><td>Domain-level network firewall (iptables)</td><td>✅ Done</td></tr>
+<tr><td>macOS Keychain and Linux file-backed secrets management</td><td>✅ Done</td></tr>
+<tr><td>DevContainer generation via Copilot SDK</td><td>✅ Done</td></tr>
+<tr><td>YAML-based configuration with presets</td><td>✅ Done</td></tr>
+<tr><td>CLI (<code>run</code>, <code>init</code>, <code>analyze</code>, <code>secrets</code>, <code>policy</code>)</td><td>✅ Done</td></tr>
+<tr><td>Interactive setup script</td><td>✅ Done</td></tr>
+<tr><td>Fail-closed seccomp syscall and stdio MCP tool boundaries</td><td>✅ Done</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="phase-2--kubernetes-orchestration-kind">Phase 2 — Kubernetes Orchestration (KinD)</h2>
+<h3 id="goal">Goal</h3>
+<p>Add <strong>Kubernetes in Docker (KinD)</strong> as an orchestrated runtime for Windows, Intel macOS, remote clusters, and multi-sandbox deployments. Linux already has direct Kata Containers support.</p>
+<h3 id="architecture">Architecture</h3>
+<pre tabindex="0"><code>┌─────────────────────────────────────────────────────┐
+│                   sendbox CLI                        │
+├──────────────────┬──────────────────────────────────┤
+│  RuntimeProvider │  (protocol / trait / interface)   │
+├──────────────────┼──────────────────────────────────┤
+│ AppleVMRuntime   │ KataRuntime      │ Kubernetes     │
+│ (macOS arm64)    │ (Linux)          │ Runtime        │
+│ Virtualization   │ nerdctl +        │ KinD +         │
+│ .framework       │ containerd       │ containerd     │
+└──────────────────┴──────────────────────────────────┘</code></pre>
+<h3 id="approach">Approach</h3>
+<ol>
+<li><p><strong>Extend the existing <code>RuntimeProvider</code> abstraction</strong> with a Kubernetes implementation while keeping sandbox logic runtime-agnostic.</p></li>
+<li><p><strong>KinD backend</strong> (<code>KubernetesRuntime</code>):</p>
+<ul>
+<li><p>Requires Docker and <a href="https://kind.sigs.k8s.io/">KinD</a> installed on the host.</p></li>
+<li><p>Creates a dedicated KinD cluster per sandbox (or reuses one with namespace isolation).</p></li>
+<li><p>Maps SendBox concepts to Kubernetes primitives:</p>
+<div class="table-scroll" role="group" aria-label="Approach table" tabindex="0">
+<table>
+<thead><tr><th scope="col">SendBox Concept</th><th scope="col">Kubernetes Primitive</th></tr></thead>
+<tbody>
+<tr><td>Container / VM</td><td>Pod (single-container)</td></tr>
+<tr><td>Command policy</td><td>Admission webhook / OPA Gatekeeper policy</td></tr>
+<tr><td>Network firewall</td><td>NetworkPolicy (Calico/Cilium)</td></tr>
+<tr><td>Secrets</td><td>Kubernetes Secrets (encrypted at rest)</td></tr>
+<tr><td>Filesystem isolation</td><td>EmptyDir + InitContainer for workspace copy</td></tr>
+<tr><td>DevContainer</td><td>Pod spec with devcontainer image + volume mounts</td></tr>
+</tbody>
+</table>
+</div></li>
+<li><p>NetworkPolicy replaces iptables — egress rules map allowed/blocked domains to CIDR blocks via DNS resolution at policy-apply time, or use Cilium's FQDN-aware policies.</p></li>
+<li><p>Secrets injected as Kubernetes Secrets mounted at <code>/run/secrets/</code> or as environment variables.</p></li>
+<li><p>Command filtering enforced via a sidecar admission proxy or an init script that wraps the shell.</p></li>
+</ul></li>
+<li><p><strong>Runtime selection</strong> — auto-detected or user-specified:</p>
+<pre tabindex="0"><code class="language-yaml"># .sendbox.yaml
+runtime:
+  provider: auto       # auto | apple | kata | kubernetes
+kubernetes:
+  provider: kind       # kind | minikube | k3d | remote
+  cluster_name: sendbox-cluster
+  namespace: sandbox-default
+  network_plugin: cilium  # calico | cilium (for FQDN policies)</code></pre></li>
+<li><p><strong>CLI changes</strong>:</p>
+<pre tabindex="0"><code class="language-bash">sendbox run --runtime kubernetes --project ./my-app
+sendbox cluster create    # Create/manage KinD cluster
+sendbox cluster delete
+sendbox cluster status</code></pre></li>
+</ol>
+<h3 id="tasks">Tasks</h3>
+<ul>
+<li>[x] Define <code>RuntimeProvider</code> protocol with create/start/stop/exec/cleanup</li>
+<li>[ ] Implement <code>KubernetesRuntime</code> using client-go or kubectl subprocess</li>
+<li>[ ] Generate Kubernetes manifests (Pod, NetworkPolicy, Secret) from SendBox config</li>
+<li>[ ] Implement FQDN-aware NetworkPolicy (Cilium CiliumNetworkPolicy or DNS-to-CIDR resolver)</li>
+<li>[ ] Map command policy to OPA/Gatekeeper constraints or shell wrapper</li>
+<li>[ ] KinD cluster lifecycle management (create, reuse, destroy)</li>
+<li>[x] Add <code>--runtime</code> flag to CLI</li>
+<li>[ ] Cross-platform CI (macOS and Linux complete; Windows pending)</li>
+<li>[x] Runtime unit tests on Linux (live Kata tests require nested virtualization)</li>
+<li>[ ] Helm chart for remote Kubernetes clusters (EKS, GKE, AKS)</li>
+</ul>
+<h3 id="platform-support-matrix">Platform Support Matrix</h3>
+<div class="table-scroll" role="group" aria-label="Platform Support Matrix table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Platform</th><th scope="col">Runtime</th><th scope="col">Status</th></tr></thead>
+<tbody>
+<tr><td>macOS arm64</td><td>Apple Virtualization</td><td>✅ Supported</td></tr>
+<tr><td>Linux x86_64</td><td>Kata Containers</td><td>✅ Supported</td></tr>
+<tr><td>Linux arm64</td><td>Kata Containers</td><td>✅ Supported</td></tr>
+<tr><td>macOS arm64</td><td>KinD</td><td>🔲 Planned</td></tr>
+<tr><td>macOS x86_64</td><td>KinD</td><td>🔲 Planned</td></tr>
+<tr><td>Linux x86_64</td><td>KinD</td><td>🔲 Planned</td></tr>
+<tr><td>Linux arm64</td><td>KinD</td><td>🔲 Planned</td></tr>
+<tr><td>Windows (WSL2)</td><td>KinD</td><td>🔲 Planned</td></tr>
+<tr><td>Remote K8s</td><td>kubectl</td><td>🔲 Planned</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="phase-3--multi-agent-tool-compatibility">Phase 3 — Multi-Agent Tool Compatibility</h2>
+<h3 id="goal-1">Goal</h3>
+<p>Support <strong>any AI coding agent</strong>, not just GitHub Copilot CLI. The sandbox should be agent-agnostic — the security guarantees (isolation, command filtering, network firewall, secrets) apply regardless of which tool runs inside.</p>
+<h3 id="supported-agents">Supported Agents</h3>
+<div class="table-scroll" role="group" aria-label="Supported Agents table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Agent</th><th scope="col">Integration Approach</th><th scope="col">Status</th></tr></thead>
+<tbody>
+<tr><td><strong>GitHub Copilot CLI</strong></td><td>Native via <code>@github/copilot-sdk</code></td><td>✅ Supported</td></tr>
+<tr><td><strong>Claude Code</strong> (Anthropic)</td><td>CLI binary + API key injection</td><td>🔲 Planned</td></tr>
+<tr><td><strong>Codex CLI</strong> (OpenAI)</td><td>CLI binary + API key injection</td><td>🔲 Planned</td></tr>
+<tr><td><strong>Gemini CLI</strong> (Google)</td><td>CLI binary + API key injection</td><td>🔲 Planned</td></tr>
+<tr><td><strong>Aider</strong></td><td>pip install + config</td><td>🔲 Planned</td></tr>
+<tr><td><strong>Cline / Roo Code</strong></td><td>VS Code extension (devcontainer)</td><td>🔲 Planned</td></tr>
+<tr><td><strong>Cursor Agent</strong></td><td>Not CLI-based (limited support)</td><td>🔲 Investigating</td></tr>
+<tr><td><strong>Amazon Q Developer CLI</strong></td><td>CLI binary + AWS credentials</td><td>🔲 Planned</td></tr>
+<tr><td><strong>Custom agents</strong></td><td>User-defined command + env</td><td>🔲 Planned</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="architecture-1">Architecture</h3>
+<pre tabindex="0"><code>┌─────────────────────────────────────────────────────┐
+│                    sendbox CLI                       │
+├─────────────────────────────────────────────────────┤
+│                  AgentProvider                       │
+│            (protocol / interface)                    │
+├────────┬─────────┬─────────┬──────────┬─────────────┤
+│Copilot │ Claude  │ Codex   │ Gemini   │ Custom      │
+│CLI     │ Code    │ CLI     │ CLI      │ (user cmd)  │
+├────────┴─────────┴─────────┴──────────┴─────────────┤
+│              Agent-Agnostic Sandbox                  │
+│  ┌──────────┬───────────┬──────────┬──────────────┐ │
+│  │ Command  │ Network   │ Secrets  │ Filesystem   │ │
+│  │ Policy   │ Firewall  │ Vault    │ Isolation    │ │
+│  └──────────┴───────────┴──────────┴──────────────┘ │
+└─────────────────────────────────────────────────────┘</code></pre>
+<h3 id="agentprovider-protocol">AgentProvider Protocol</h3>
+<p>Each agent adapter implements:</p>
+<pre tabindex="0"><code>AgentProvider:
+  name()           → String               # &quot;claude-code&quot;, &quot;codex&quot;, etc.
+  installCommand() → [String]             # How to install inside container
+  runCommand()     → [String]             # How to launch the agent
+  requiredSecrets() → [String]            # e.g., [&quot;ANTHROPIC_API_KEY&quot;]
+  requiredDomains() → [String]            # e.g., [&quot;api.anthropic.com&quot;]
+  healthCheck()    → Bool                 # Verify agent is working
+  configFiles()    → [FilePath]           # Agent-specific config to mount</code></pre>
+<h3 id="agent-specific-details">Agent-Specific Details</h3>
+<h4 id="claude-code-anthropic">Claude Code (Anthropic)</h4>
+<ul>
+<li><strong>Install</strong>: <code>npm install -g @anthropic-ai/claude-code</code></li>
+<li><strong>Run</strong>: <code>claude</code> (interactive) or <code>claude -p &quot;prompt&quot;</code> (headless)</li>
+<li><strong>Secrets</strong>: <code>ANTHROPIC_API_KEY</code></li>
+<li><strong>Domains</strong>: <code>api.anthropic.com</code>, <code>*.anthropic.com</code></li>
+<li><strong>Notes</strong>: Supports <code>--allowedTools</code> flag for built-in tool restriction. SendBox command policy provides an additional layer.</li>
+</ul>
+<h4 id="codex-cli-openai">Codex CLI (OpenAI)</h4>
+<ul>
+<li><strong>Install</strong>: <code>npm install -g @openai/codex</code></li>
+<li><strong>Run</strong>: <code>codex</code> (interactive) or <code>codex -q &quot;prompt&quot;</code></li>
+<li><strong>Secrets</strong>: <code>OPENAI_API_KEY</code></li>
+<li><strong>Domains</strong>: <code>api.openai.com</code>, <code>*.openai.com</code></li>
+<li><strong>Notes</strong>: Has its own sandbox mode (<code>--full-auto</code>). SendBox wraps this for network/filesystem guarantees the built-in sandbox doesn't provide.</li>
+</ul>
+<h4 id="gemini-cli-google">Gemini CLI (Google)</h4>
+<ul>
+<li><strong>Install</strong>: <code>npm install -g @anthropic-ai/claude-code</code> → TBD (check actual package name on release)</li>
+<li><strong>Run</strong>: <code>gemini</code> or via API</li>
+<li><strong>Secrets</strong>: <code>GEMINI_API_KEY</code> or Google Cloud credentials</li>
+<li><strong>Domains</strong>: <code>generativelanguage.googleapis.com</code>, <code>*.googleapis.com</code></li>
+<li><strong>Notes</strong>: May require Google Cloud auth flow.</li>
+</ul>
+<h4 id="aider">Aider</h4>
+<ul>
+<li><strong>Install</strong>: <code>pip install aider-chat</code></li>
+<li><strong>Run</strong>: <code>aider --model &lt;model&gt;</code></li>
+<li><strong>Secrets</strong>: Model-specific API key (<code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, etc.)</li>
+<li><strong>Domains</strong>: Depends on model provider</li>
+<li><strong>Notes</strong>: Highly configurable. SendBox mounts <code>.aider.conf.yml</code> if present.</li>
+</ul>
+<h4 id="custom-agent">Custom Agent</h4>
+<ul>
+<li><strong>Config</strong>: User provides install/run commands directly
+<pre tabindex="0"><code class="language-yaml">agent:
+  type: custom
+  install: &quot;pip install my-agent&quot;
+  command: [&quot;my-agent&quot;, &quot;--workspace&quot;, &quot;/workspace&quot;]
+  secrets:
+    - MY_API_KEY
+  extra_domains:
+    - &quot;api.my-service.com&quot;</code></pre></li>
+</ul>
+<h3 id="configuration-changes">Configuration Changes</h3>
+<pre tabindex="0"><code class="language-yaml"># .sendbox.yaml — Phase 3 additions
+agent:
+  type: claude-code           # copilot | claude-code | codex | gemini | aider | custom
+  
+  # Auto-resolved per agent type, but overridable:
+  # install_command: &quot;npm install -g @anthropic-ai/claude-code&quot;
+  # run_command: [&quot;claude&quot;, &quot;-p&quot;, &quot;Fix all failing tests&quot;]
+  
+  # Agent-specific options
+  options:
+    model: claude-sonnet-4-20250514    # For agents that support model selection
+    headless: true             # Non-interactive mode
+    prompt: &quot;Fix the CI&quot;       # Initial prompt for headless mode
+    
+  # Custom agent (when type: custom)
+  # custom:
+  #   install: &quot;pip install my-agent&quot;
+  #   command: [&quot;my-agent&quot;, &quot;--auto&quot;]
+  #   secrets: [MY_API_KEY]
+  #   domains: [&quot;api.example.com&quot;]</code></pre>
+<h3 id="tasks-1">Tasks</h3>
+<ul>
+<li>[ ] Define <code>AgentProvider</code> protocol</li>
+<li>[ ] Implement <code>CopilotAgent</code> (refactor existing Copilot SDK integration)</li>
+<li>[ ] Implement <code>ClaudeCodeAgent</code></li>
+<li>[ ] Implement <code>CodexAgent</code></li>
+<li>[ ] Implement <code>GeminiAgent</code></li>
+<li>[ ] Implement <code>AiderAgent</code></li>
+<li>[ ] Implement <code>CustomAgent</code> (user-defined)</li>
+<li>[ ] Auto-detect agent type from project files (<code>.claude</code>, <code>.codex</code>, etc.)</li>
+<li>[ ] Agent-specific domain allowlists (merged with user policy)</li>
+<li>[ ] Agent-specific secret requirements (validated before launch)</li>
+<li>[ ] <code>sendbox run --agent claude-code --project ./my-app</code></li>
+<li>[ ] Documentation and examples for each agent</li>
+</ul>
+<hr>
+<h2 id="phase-4--advanced-features">Phase 4 — Advanced Features</h2>
+<p>Features planned after core platform and agent support is solid.</p>
+<h3 id="observability--audit">Observability &amp; Audit</h3>
+<ul>
+<li>[ ] Full audit log of all commands executed, network connections made, files modified</li>
+<li>[x] eBPF inspection of MCP (Model Context Protocol) calls the agent performs</li>
+<li>[ ] Real-time dashboard (TUI) showing agent activity</li>
+<li>[ ] Export audit logs as JSON/CSV for compliance</li>
+<li>[ ] Cost tracking (API calls made by agent, token usage if available)</li>
+</ul>
+<h3 id="multi-agent-orchestration">Multi-Agent Orchestration</h3>
+<ul>
+<li>[ ] Run multiple agents in isolated sandboxes that share a workspace</li>
+<li>[ ] Agent-to-agent communication through controlled channels</li>
+<li>[ ] Supervisor agent that reviews changes from worker agents</li>
+</ul>
+<h3 id="snapshot--rollback">Snapshot &amp; Rollback</h3>
+<ul>
+<li>[ ] Filesystem snapshots before/after agent runs</li>
+<li>[ ] Diff view of all changes made by the agent</li>
+<li>[ ] One-click rollback to pre-agent state</li>
+<li>[ ] Git-based change tracking within the sandbox</li>
+</ul>
+<h3 id="cicd-integration">CI/CD Integration</h3>
+<ul>
+<li>[ ] GitHub Actions action: <code>sendbox-action</code></li>
+<li>[ ] GitLab CI template</li>
+<li>[ ] Pre-commit hook for validating sandbox configs</li>
+<li>[ ] PR review mode: agent runs in sandbox, posts diff as PR comment</li>
+</ul>
+<h3 id="policy-as-code">Policy as Code</h3>
+<ul>
+<li>[ ] OPA/Rego policy language support for complex rules</li>
+<li>[x] Operator-signed governance profiles that projects can only narrow (<a href="../architecture/governed-sessions/">governed sessions</a>, single host)</li>
+<li>[x] Host-side brokered model provider credentials with leased, revocable grants (Anthropic, OpenAI)</li>
+<li>[x] Shared multi-user governance service with project-scoped roles, approved expiring exceptions, and central audit (<a href="https://github.com/sendbox-dev/sendbox-fleet"><code>sendbox-fleet</code></a>, <a href="../architecture/governed-sessions/#shared-governance-service">shared governance service</a>)</li>
+<li>[ ] Policy inheritance (org → team → project)</li>
+<li>[ ] Policy testing framework</li>
+<li>[ ] Community policy library</li>
+</ul>
+<hr>
+<h2 id="timeline">Timeline</h2>
+<div class="table-scroll" role="group" aria-label="Timeline table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Phase</th><th scope="col">Target</th><th scope="col">Key Milestone</th></tr></thead>
+<tbody>
+<tr><td>Phase 1</td><td>✅ Complete</td><td>Core sandbox on macOS with Copilot SDK</td></tr>
+<tr><td>Phase 2</td><td>Next</td><td>KinD runtime → Linux/Windows support</td></tr>
+<tr><td>Phase 3</td><td>After Phase 2</td><td>Claude Code, Codex, Gemini CLI support</td></tr>
+<tr><td>Phase 4</td><td>Ongoing</td><td>Audit logs, multi-agent, CI/CD</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="contributing">Contributing</h2>
+<p>We welcome contributions, especially for:</p>
+<ul>
+<li>New <code>AgentProvider</code> implementations</li>
+<li>New <code>RuntimeProvider</code> backends (Podman, Firecracker, gVisor)</li>
+<li>Platform testing on Linux and Windows</li>
+<li>Policy templates for common use cases</li>
+</ul>
+<p>See <a href="https://github.com/apple/containerization/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> for guidelines.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/ROADMAP.md"><code>ROADMAP.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/ROADMAP.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../qualification/"><span class="pager-label">Previous</span> Qualification</a>
+<a class="pager-next" href="../architecture/runtime-core/"><span class="pager-label">Next</span> Runtime core</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="./" aria-current="page">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

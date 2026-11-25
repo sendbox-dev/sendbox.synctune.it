@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rust CLI | SendBox docs</title>
+  <meta name="description" content="Cargo emits the production binary as sendbox. Its clap command name, help, JSON contracts, generated completions, install paths, and release artifacts use…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Rust CLI | SendBox docs">
+  <meta property="og:description" content="Cargo emits the production binary as sendbox. Its clap command name, help, JSON contracts, generated completions, install paths, and release artifacts use…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/rust-cli-parity/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/rust-cli-parity/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Rust CLI</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="rust-cli">Rust CLI</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#implemented-command-groups">Implemented command groups</a></li>
+<li><a href="#configuration-persistence">Configuration persistence</a></li>
+<li><a href="#runtime-contract">Runtime contract</a></li>
+</ol>
+</nav>
+<p>Cargo emits the production binary as <code>sendbox</code>. Its clap command name, help,
+JSON contracts, generated completions, install paths, and release artifacts use
+the same name.</p>
+<h2 id="implemented-command-groups">Implemented command groups</h2>
+<div class="table-scroll" role="group" aria-label="Implemented command groups table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Surface</th><th scope="col">Rust behavior</th></tr></thead>
+<tbody>
+<tr><td><code>init</code></td><td>Resolves an existing readable/searchable project directory, selects a policy preset and runtime, validates deterministic v1 YAML, creates <code>.sendbox.yaml</code> atomically with mode <code>0600</code>, and never overwrites an existing file.</td></tr>
+<tr><td><code>policy show</code></td><td>Shows the default or configured policy as stable text or deterministic JSON. Configuration input uses strict decoding and policy-only validation.</td></tr>
+<tr><td><code>policy validate</code></td><td>Retains full sandbox validation, deterministic JSON, diagnostics, and exit <code>2</code> for invalid configuration.</td></tr>
+<tr><td><code>completions print</code></td><td>Generates bash, zsh, or fish output directly from the clap command tree.</td></tr>
+<tr><td><code>completions install</code></td><td>Detects <code>SHELL</code> or accepts <code>--shell</code>, falls back to zsh when detection is unavailable, writes to stable per-shell paths with atomic replacement, mode <code>0644</code>, and directory mode <code>0755</code>. It never launches a shell or respawns the CLI.</td></tr>
+<tr><td><code>analyze</code> / <code>devcontainer generate</code></td><td>Retains the existing native project-analysis subset.</td></tr>
+<tr><td><code>secrets</code></td><td>Adds, lists, and removes versioned secrets through Keychain on macOS or the descriptor-safe protected file store on Linux without printing values.</td></tr>
+<tr><td><code>mcp parse</code> / <code>mcp report</code></td><td>Parses native or legacy observations with optional redaction and deterministic JSON. It does not generate executable inspection scripts.</td></tr>
+<tr><td><code>package status</code> / <code>package report</code></td><td>Securely loads the latest or selected session's owner-only package report, rejects symlinks, malformed/cross-session data, bad modes/ownership, and oversize files, then prints a verdict summary or the complete report.</td></tr>
+<tr><td><code>boundary inspect</code></td><td>Emits the structured native boundary declaration without scripts or secret values.</td></tr>
+<tr><td><code>run</code></td><td>Resolves and verifies a signed immutable boundary plan, selects Apple/Kata/Hyperlight without fallback, and dispatches either an authenticated persistent guest session or the explicit authenticated Hyperlight one-shot path.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Exit <code>2</code> is reserved for invalid input/configuration, <code>3</code> for project analysis
+failures, and <code>4</code> for output failures or no-overwrite refusals. Text failures go
+to stderr. Commands with <code>--json</code> emit one deterministic failure object to
+stdout and leave stderr empty.</p>
+<h2 id="configuration-persistence">Configuration persistence</h2>
+<p><code>sendbox-config</code> accepts current v1 documents with no version key and migration
+inputs carrying <code>schema_version: 1</code>. Future versions and unknown fields are
+rejected. Canonical YAML uses declaration-order snake_case keys, omits absent
+optional values, preserves explicit empty collections, and includes documented
+defaults. Migration reports distinguish schema changes from formatting
+canonicalization.</p>
+<p>Writes validate first, open every destination-directory component without
+following symlinks, create a temporary file through the opened directory, set
+the final mode, sync content, and atomically create or replace the destination.
+<code>init</code> uses a no-replace rename so a concurrent creator wins without being
+modified; explicit migration callers may request replacement. Descriptor-based
+traversal requires read and search permission on existing destination
+directories. Completion setup applies <code>0755</code> only to directories it creates and
+preserves stricter modes on directories that already exist.</p>
+<h2 id="runtime-contract">Runtime contract</h2>
+<p><code>run</code> requires an absolute guest command plus a verified bundle and trust root.
+Persistent Apple and Kata execution waits for authenticated guest readiness and
+the required capability set before resolving workload secrets or launching the
+command. Hyperlight is explicit-only and rejects every feature its one-shot
+boundary cannot enforce. Text errors use stderr; <code>--json</code> emits one error or
+result object to stdout. Package-enabled persistent results include report path,
+digest, proxy state, record count, and allow/deny/quarantine totals.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/rust-cli-parity.md"><code>docs/architecture/rust-cli-parity.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/rust-cli-parity.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../native-project-analysis/"><span class="pager-label">Previous</span> Native project analysis</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="./" aria-current="page">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

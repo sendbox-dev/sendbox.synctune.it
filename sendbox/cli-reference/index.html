@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI reference | SendBox docs</title>
+  <meta name="description" content="Commands, run flags and common examples.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="CLI reference | SendBox docs">
+  <meta property="og:description" content="Commands, run flags and common examples.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/cli-reference/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/cli-reference/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">CLI reference</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Get started</p>
+<h1 id="cli-reference">CLI reference</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#init-profiles-and-workspace-scope">Init profiles and workspace scope</a></li>
+<li><a href="#run-flags">Run flags</a></li>
+<li><a href="#governance">Governance</a></li>
+<li><a href="#examples">Examples</a></li>
+</ol>
+</nav>
+<p>The Rust CLI implements the supported <code>sendbox</code> command surface:</p>
+<pre tabindex="0"><code class="language-text">USAGE: sendbox &lt;subcommand&gt; [options]
+
+SUBCOMMANDS:
+  init          Initialize a new sendbox.yaml in the current directory
+  run           Start the sandbox and launch the agent
+  analyze       Analyze a project and generate a devcontainer spec
+  secrets       Add, remove, or list stored secrets
+  policy        Show or validate policies
+  mcp           Parse and summarize native or legacy MCP observations
+  package       Show package verdict status or a complete security report
+  boundary      Inspect the structured native boundary plan
+  governance    Sign, verify, and check operator governance profiles
+  completions   Install or print shell completions
+  help          Show help for any subcommand</code></pre>
+<p>Use <code>sendbox help</code> or <code>sendbox help &lt;subcommand&gt;</code> for the options supported by
+the installed version.</p>
+<h2 id="init-profiles-and-workspace-scope">Init profiles and workspace scope</h2>
+<p><code>sendbox init --agent moguri|opencode|claude|codex|copilot|gemini|custom</code> selects the
+entry program and initial inference endpoints; <code>open-code</code> is an alias for
+<code>opencode</code>. Omit <code>--agent</code> to preserve the existing defaults.
+<code>--workspace PATH</code> explicitly shares an enclosing multi-repository root while
+<code>--project PATH</code> retains the selected repository and initial cwd. See
+<a href="../cli-agents/">CLI agents</a> for credentials, native MCP formats, and examples.</p>
+<h2 id="run-flags">Run flags</h2>
+<div class="table-scroll" role="group" aria-label="Run flags table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Flag</th><th scope="col">Description</th></tr></thead>
+<tbody>
+<tr><td><code>--config PATH</code></td><td>Sandbox configuration file</td></tr>
+<tr><td><code>--runtime auto|apple|kata|hyperlight</code></td><td>Runtime provider selection</td></tr>
+<tr><td><code>--image IMAGE@sha256:DIGEST</code></td><td>Digest-pinned workload image for persistent runtimes</td></tr>
+<tr><td><code>--bundle PATH</code></td><td>Verified guest bundle directory</td></tr>
+<tr><td><code>--trust-root PATH</code></td><td>Release public key used to verify the bundle</td></tr>
+<tr><td><code>--json</code></td><td>Emit machine-readable events instead of raw output</td></tr>
+<tr><td><code>--interactive</code></td><td>Run the workload on a pseudoterminal; conflicts with <code>--json</code></td></tr>
+<tr><td><code>--governance-config PATH</code></td><td>Opt-in governance configuration; rejected when a managed configuration names a different file</td></tr>
+</tbody>
+</table>
+</div>
+<p>See <a href="../interactive-sessions/">interactive sessions</a> for terminal-specific
+requirements and <a href="../configuration/">configuration</a> for the YAML reference.</p>
+<p>JSON workload output events carry <code>encoding: &quot;hex&quot;</code>; decode their <code>data</code> before
+comparing payload bytes. A persistent launch/runtime failure reports its already
+credential-masked terminal diagnostic in the result's <code>message</code> field and keeps
+the existing nonzero exit code. Text mode prints that diagnostic to stderr.
+Successful result objects do not add a failure message.</p>
+<p>For an exact <code>github.com</code> grant, the final JSON result includes
+<code>network_report: {path, sha256}</code>. The private JSON artifact contains the configured policy
+and latest GitHub Meta scope/provenance for each active gateway role. Read its
+freshness, failure and expiry fields before interpreting the published grants;
+explicit deny and restricted-address rules still apply. It is authenticated
+guest evidence whose digest is recorded in session provenance, not a separately
+GitHub-signed feed or a complete refresh log.
+See <a href="../configuration/#network-grants">network grants</a>.</p>
+<h2 id="governance">Governance</h2>
+<p><code>sendbox governance</code> manages operator-signed profiles for
+<a href="../architecture/governed-sessions/">governed sessions</a>:</p>
+<div class="table-scroll" role="group" aria-label="Governance table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Subcommand</th><th scope="col">Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>keygen --output PATH</code></td><td>Create an Ed25519 signing key (mode <code>0600</code>, never overwritten) and print its public identity</td></tr>
+<tr><td><code>sign PROFILE --key PATH [--append]</code></td><td>Sign the profile's exact bytes into <code>PROFILE.sig.json</code>; <code>--append</code> adds a threshold signature</td></tr>
+<tr><td><code>verify [--governance-config PATH]</code></td><td>Verify the active operator configuration, profile, and signatures</td></tr>
+<tr><td><code>check --config PATH [--governance-config PATH] [--runtime apple|kata] [--image IMAGE@sha256:DIGEST]</code></td><td>List every violation of the active profile without starting a session</td></tr>
+<tr><td><code>login [--governance-config PATH] [--identity-token-file PATH] [--ttl-seconds N] [--description TEXT]</code></td><td>Exchange an identity-provider token (read from the file, stdin, or a prompt) with the configured shared governance service and store the returned service token in the host secret store</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each subcommand accepts <code>--json</code>. A governance failure or a rejected
+configuration exits with code <code>6</code>. <code>check</code> evaluates the local profile only;
+with a <a href="../architecture/governed-sessions/#shared-governance-service">shared governance service</a>,
+run <code>sendbox governance login</code> (or <code>sendbox secrets add SENDBOX_FLEET_TOKEN</code>)
+before <code>sendbox run</code>.</p>
+<h2 id="examples">Examples</h2>
+<pre tabindex="0"><code class="language-bash"># Initialize a new project
+sendbox init
+
+# Run with the Kata backend
+sendbox run --config .sendbox.yaml --runtime kata \
+  --image registry.example/workload@sha256:&lt;digest&gt; \
+  --bundle /usr/local/share/sendbox/guest/x86_64/bundle \
+  --trust-root /usr/local/share/sendbox/guest/x86_64/release-public.key \
+  -- /usr/bin/true
+
+# Generate a devcontainer spec
+sendbox analyze --project . --output .devcontainer/
+
+# Validate a sandbox configuration's policy
+sendbox policy validate --config sendbox.yaml
+
+# Show configured policy as deterministic JSON (no live metadata retrieval)
+sendbox policy show --config sendbox.yaml --json
+
+# Show the latest package-enabled run and its complete report
+sendbox package status
+sendbox package report --json
+
+# Print or install generated shell completions
+sendbox completions print --shell zsh
+sendbox completions install --shell fish
+
+# Native analysis with automation JSON
+cargo run -p sendbox-cli -- analyze --project . --json
+
+# Native devcontainer generation
+cargo run -p sendbox-cli -- devcontainer generate --project . --json
+
+# Parse a captured trace log and summarize MCP activity
+sendbox mcp parse /var/log/sendbox/mcp-trace.log
+sendbox mcp report /var/log/sendbox/mcp-trace.log
+
+# Inspect the structured boundary declaration without generating scripts
+sendbox boundary inspect --config .sendbox.yaml --json
+
+# Check a project against the active governance profile
+sendbox governance check --config .sendbox.yaml --runtime apple</code></pre>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/cli-reference.md"><code>docs/cli-reference.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/cli-reference.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../configuration/"><span class="pager-label">Previous</span> Configuration</a>
+<a class="pager-next" href="../interactive-sessions/"><span class="pager-label">Next</span> Interactive sessions</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="./" aria-current="page">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

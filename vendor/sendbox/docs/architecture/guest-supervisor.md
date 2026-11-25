@@ -1,0 +1,225 @@
+# Guest Bootstrap and Supervisor
+
+Status: **production runtime integration**. This document defines the trust, bootstrap,
+readiness, service, and fail-closed semantics implemented by
+`guest/sendbox-guest`. Apple and Kata integrate the production execution broker,
+mandatory DNS/SOCKS5 egress service, and authenticated MCP policy. The host
+session lifecycle owns audit and snapshot persistence. The guest also starts the
+mandatory MCP audit service and, for remote MCP, a trusted HTTP gateway inside
+the egress broker. When enabled, the supervisor also owns the Safe Outputs
+recorder and its seal key. BPF activation remains explicit guest policy.
+
+Threaded glibc workloads retain ordinary pthread support through classic `clone`
+fallback. Both the agent bootstrap and child-only filter reject `clone3` with
+`ENOSYS`, not an allow decision. Namespace clone flags and dangerous
+process-control syscalls remain denied, and the bootstrap verifies the expected
+`clone3` denial before publishing readiness.
+
+## Process and command model
+
+`sendbox-guest` is a static multi-call binary with these entrypoints:
+
+- `bootstrap` and `supervisor` both run the complete lifecycle in one long-lived
+  process. They are not separate stages because the bootstrap secret must never
+  cross a process boundary or be persisted.
+- `health` reads the local atomic readiness marker. The authenticated control
+  protocol remains authoritative to a remote host.
+- `service-run` is hidden and exists only for deterministic process-supervision
+  qualification.
+- `inject-bootstrap` and `tunnel` are hidden runtime-only Kata controls.
+- `exec-broker` is the mandatory one-session production broker service.
+- `egress-supervisor` and `egress-gateway` are hidden production services for
+  cgroup/nftables ownership and loopback DNS, CONNECT, and MCP listeners.
+- `mcp-audit` is the mandatory root-owned MCP audit sink.
+- invocation as the installed `mcp-broker` path runs the exact-command stdio
+  broker selected by project MCP configuration.
+- `safe-outputs-mcp` is a root-installed stdio bridge to the authenticated
+  session recorder. The bridge never validates or persists operations itself.
+
+Typed service identifiers reserve `exec`, `mcp`, `dns`, `egress`, `audit`,
+`bpf`, and `safe_outputs`. Reserving an identifier does not claim that its
+service is implemented. The Safe Outputs identity represents the mandatory
+in-process recorder rather than a separate child, so the bootstrap secret never
+crosses a process boundary. Exec depends on configured mandatory egress and
+audit services; readiness is not published until the complete dependency graph
+is healthy.
+
+## Trust and immutable bootstrap
+
+The runtime stages a prebuilt artifact tree before guest startup. The guest does
+not download, generate, or replace artifacts.
+
+The release trust root is injected as a separate root-owned, single-link, `0444`
+file containing exactly 32 raw Ed25519 public-key bytes. The guest never creates a
+trust root. The one-time bootstrap input is a root-owned, single-link, `0400`
+regular file under a symlink-free absolute path. It is opened once with
+`O_NOFOLLOW`, inspected through the open descriptor, atomically renamed to a
+consumed name, bounded to 64 KiB, parsed with unknown-field rejection, zeroized,
+and unlinked. A persistent nonce digest in the root-owned replay ledger rejects a
+copied bootstrap input. The replay ledger is provisioned separately from volatile
+runtime state (default `/var/lib/sendbox/replay`), and its marker plus directory
+are synced after bounded bootstrap validation but before the consumed source is
+unlinked or artifact-manifest processing begins.
+
+The bootstrap secret is at least 32 bytes, redacted by the protocol type, zeroized
+on drop, never logged, and never written to runtime state. Bootstrap and supervisor
+remain one process so the secret reaches the authenticated handshake only in
+memory.
+
+## Signed artifact manifest
+
+The signed envelope contains UTF-8 manifest payload bytes and an Ed25519
+signature. Signature verification precedes payload decoding. The signed payload
+binds:
+
+- schema and signature domain;
+- trust-root identity;
+- monotonic release sequence and minimum accepted sequence;
+- expected host and guest versions;
+- target architecture;
+- guest binaries, service binaries, and BPF object paths;
+- SHA-256 digest, file mode, UID, and GID for every artifact.
+
+Artifact paths must be relative and contain only normal components. Verification
+walks from an already-open artifact-root descriptor. Every directory component is
+opened with `O_DIRECTORY | O_NOFOLLOW`; every artifact is opened with
+`O_NOFOLLOW`, checked as a single-link regular file with `fstat`, and hashed from
+that descriptor. Absolute paths, parent traversal, symlinks, hard links, digest
+mismatches, owner/mode mismatches, architecture drift, version drift, forged
+signatures, and rollback sequences fail closed.
+
+Verified service executable descriptors remain open. Linux service launch uses
+the descriptor through `/proc/self/fd` rather than reopening the mutable artifact
+pathname, so a post-verification rename or symlink swap cannot select new code.
+
+## Startup and readiness contract
+
+The only valid startup sequence is:
+
+1. `awaiting_bootstrap`
+2. `bootstrap_consumed`
+3. `manifest_verified`
+4. `runtime_prepared`
+5. `services_starting`
+6. `controls_verified`
+7. `self_testing`
+8. `ready`
+9. optionally `agent_launch_permitted`
+10. `shutting_down`
+11. `terminated`
+
+Any other transition is rejected. Failure enters `failed`, revokes readiness, and
+can only continue through shutdown and termination.
+
+The per-session runtime directory is created with exclusive `0700` semantics.
+Existing session state is stale and rejected. State and readiness files are
+written through a synced temporary file and atomic rename. Readiness is published
+only after:
+
+- the bootstrap was consumed and its nonce registered;
+- the signed manifest and every artifact passed verification;
+- the runtime directory passed ownership and mode checks;
+- every required platform control reported `verified = true`;
+- every mandatory service started in dependency order and passed health checks;
+- platform and service self-tests passed;
+- the control socket was bound.
+
+The guest then performs the existing `sendbox-protocol` mutual authenticated
+handshake. Its first authenticated lifecycle event contains the exact release
+sequence, verified control reports, service health, and deterministic audit
+events. Mandatory-service liveness is rechecked after the handshake and before
+every authenticated health or launch response. `agent.launch` is authorized once
+and only while the local state is
+`ready`. With a configured Kata broker, `agent.launch` decodes operational
+schema v1, maps absolute paths to retained broker roots, forwards the exact argv,
+streams sequenced output, forwards cancellation, and returns a typed terminal
+result only after broker cleanup evidence is available. Without a configured
+broker it is rejected. No marker, handshake, health response, or launch response
+reports success for a control that was not verified.
+
+## Service supervision and failure behavior
+
+Each service has a typed identifier, verified executable path, dependencies,
+mandatory flag, restart budget/backoff, health probe, graceful/forced shutdown
+timeouts, and bounded stdout/stderr storage. Dependency cycles and missing
+dependencies are rejected before spawn. A mandatory service cannot depend on an
+optional service. Services run in dedicated process groups.
+Output is drained concurrently and retained only up to the configured bound.
+
+The execution broker's connection-only startup health probe must not consume its
+single execution session. It retries only a peer-checked connection that closes
+without sending any request bytes. Nonempty malformed frames, invalid first
+operations, wrong peer identities, and invalid session authentication still fail;
+the actual execution request remains single-use.
+
+Optional services restart only within their declared budget, and dependents are
+re-health-checked after an optional dependency restart. Any mandatory service
+exit revokes the launch gate immediately; mandatory services are never restarted
+inside an already-ready session. A mandatory service that cannot start, cannot
+pass health, or exits causes:
+
+1. atomic readiness revocation;
+2. protocol termination;
+3. SIGTERM to every supervised process group;
+4. SIGKILL after the grace limit;
+5. direct-child reaping;
+6. socket and per-session runtime cleanup.
+
+The same fail-closed path applies to authenticated protocol loss. Drop guards send
+SIGKILL to process groups and remove runtime state if an async task is cancelled.
+The replay ledger is intentional persistent security state and is not session
+garbage.
+
+## Platform-control boundary
+
+Privilege drop, capabilities, and seccomp are represented by the injected
+`PlatformControls` trait. The production Linux adapter requires root identity,
+prepares and verifies the delegated cgroup v2 parent, starts the mandatory broker,
+then installs and verifies the NNP/TSYNC direct-exec filter before readiness.
+The bootstrap injection helper first moves init into `/sendbox-runtime`, before
+completing injection or enabling any controllers. Native runtimes can snapshot
+init's cgroup while preparing later control execs; its membership must be stable
+before concurrent controller delegation makes the old root a non-leaf. Migration
+failure aborts injection. This changes process membership, not the cgroup
+namespace root. Egress admission accepts init
+only at `/` or that trusted runtime leaf and independently requires a single
+read/write cgroup2 mount rooted at `/` at `/sys/fs/cgroup`. Subtree mounts,
+read-only mounts, and unrelated init cgroups fail closed.
+The runtime may start its stdio relay while controllers are being delegated.
+An `EBUSY` write refreshes and migrates the current root processes before retrying,
+within a five-second deadline. Processes that have already exited are logged and
+skipped; other migration errors, permission errors, and an exhausted deadline
+remain fatal. No controller requirement is skipped to make readiness succeed.
+The launcher drops brokered workloads to the non-root project uid/gid and applies
+the production capability, rlimit, cgroup, pidfd, and command seccomp controls.
+Tests retain a deterministic unprivileged adapter.
+
+Production egress/nftables, authenticated secret delivery, hierarchical stdio
+MCP policy, the Streamable HTTP MCP gateway, and mandatory MCP audit integration
+are wired into this lifecycle. BPF attachment remains an explicit policy-driven
+observation feature and is never an MCP authorization mechanism.
+
+## Static delivery
+
+`guest/sendbox-guest/Dockerfile` builds with the pinned Rust 1.93.1 Alpine image
+for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`. The CI job builds
+each architecture twice without cache, compares same-architecture binaries, and
+uses `file`, `readelf`, and `ldd` evidence to reject an ELF interpreter or shared
+dependency.
+
+The pinned libseccomp source is downloaded through GitHub's release-asset API
+using its immutable asset ID, with bounded retries and network timeouts.
+SHA-256 verification remains mandatory before extraction. The optional
+`github_token` BuildKit secret authenticates the request in CI.
+
+Guest Supervisor CI passes `--build-arg CARGO_BUILD_JOBS=2` to the quality build
+and both clean builds on each native architecture, matching production bundle
+CI's compiler budget. The Dockerfile still defaults to one Cargo build worker
+for local builds. Only compilation concurrency changes: locked dependencies,
+quality checks, dependency audits, static-link checks, and both uncached
+reproducibility builds remain unchanged.
+
+The x86_64 build wrappers follow `ubuntu-latest`. Native arm64 retains
+`ubuntu-24.04-arm`, because GitHub has no supported floating arm64 Ubuntu alias.
+The digest-pinned container and compiler inputs remain independent of the
+wrapper image; the two-worker budget and both clean proofs are unchanged.

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Development | SendBox Fleet docs</title>
+  <meta name="description" content="Configuration, bootstrap, local runs, tests and logs.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Development | SendBox Fleet docs">
+  <meta property="og:description" content="Configuration, bootstrap, local runs, tests and logs.">
+  <meta property="og:url" content="https://sendbox.synctune.it/fleet/development/">
+  <link rel="canonical" href="https://sendbox.synctune.it/fleet/development/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../sendbox/">SendBox docs</a></li>
+        <li><a href="../" class="is-active">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox Fleet docs</a></li>
+<li><span aria-current="page">Development</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox Fleet docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox Fleet · Contribute</p>
+<h1 id="development">Development</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#prerequisites">Prerequisites</a></li>
+<li><a href="#configuration">Configuration</a></li>
+<li><a href="#run-locally-with-sqlite">Run locally with SQLite</a></li>
+<li><a href="#bootstrap-principals-tokens-and-projects">Bootstrap principals, tokens, and projects</a></li>
+<li><a href="#run-with-postgresql-compose">Run with PostgreSQL (Compose)</a></li>
+<li><a href="#checks">Checks</a></li>
+<li><a href="#logs">Logs</a></li>
+<li><a href="#migrations">Migrations</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+</ol>
+</nav>
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li><a href="https://rustup.rs">rustup</a>. The pinned toolchain (Rust 1.100.0 with
+clippy and rustfmt) installs automatically from <code>rust-toolchain.toml</code>.</li>
+<li>A Docker-compatible engine with Compose, only for the PostgreSQL stack.</li>
+</ul>
+<h2 id="configuration">Configuration</h2>
+<p>The server reads its configuration from the environment at startup and exits
+with status <code>2</code> and a message naming the variable when a value is invalid.</p>
+<div class="table-scroll" role="group" aria-label="Configuration table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Variable</th><th scope="col">Default</th><th scope="col">Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>FLEET_DATABASE_URL</code></td><td>required</td><td><code>sqlite://path.db?mode=rwc</code>, <code>sqlite::memory:</code>, or <code>postgres://user:password@host:5432/db</code></td></tr>
+<tr><td><code>FLEET_BIND</code></td><td><code>127.0.0.1:8080</code></td><td>Listen address</td></tr>
+<tr><td><code>FLEET_LOG_DIR</code></td><td><code>./logs</code></td><td>Log directory; relative paths resolve against the working directory at startup</td></tr>
+<tr><td><code>FLEET_LOG_LEVEL</code></td><td><code>info,sqlx=warn</code></td><td><a href="https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html"><code>EnvFilter</code></a> directives</td></tr>
+<tr><td><code>FLEET_LOG_RETENTION_DAYS</code></td><td><code>30</code></td><td>Days to keep rotated log files (1 to 3650)</td></tr>
+<tr><td><code>FLEET_AUTHORITY_ID</code></td><td><code>sendbox-fleet</code></td><td>Authority id hosts put in <code>authority:</code> of their operator configuration and bind into every session; not <code>local</code></td></tr>
+<tr><td><code>FLEET_PROFILE_TRUST</code></td><td>unset</td><td>YAML or JSON file with <code>threshold</code> and <code>signers</code> (the same shape as a host operator configuration's <code>trust</code> section). Profile publication is refused until it is set</td></tr>
+<tr><td><code>FLEET_OIDC_CONFIG</code></td><td>unset</td><td>YAML file of trusted identity providers (<a href="../deployment/#identity-providers">format</a>). Unset: only service tokens authenticate</td></tr>
+<tr><td><code>FLEET_TOKEN_TTL_SECONDS</code></td><td><code>43200</code> (12 h)</td><td>Default lifetime of tokens from <code>POST /v1/tokens</code></td></tr>
+<tr><td><code>FLEET_TOKEN_MAX_TTL_SECONDS</code></td><td><code>604800</code> (7 d)</td><td>Longest lifetime a caller may request (at most 90 days)</td></tr>
+<tr><td><code>FLEET_AUDIT_SIGNING_KEY</code></td><td>unset</td><td>Key from <code>admin audit keygen</code> (no group or other access). Enables <code>GET /v1/audit/head</code></td></tr>
+<tr><td><code>FLEET_AUDIT_ANCHOR_DIR</code></td><td>unset</td><td>Directory for periodic signed heads; needs the signing key</td></tr>
+<tr><td><code>FLEET_AUDIT_ANCHOR_INTERVAL_SECONDS</code></td><td><code>3600</code></td><td>Anchoring interval (60 to 86400)</td></tr>
+<tr><td><code>FLEET_RATE_LIMIT_PER_MINUTE</code></td><td><code>1200</code></td><td><code>/v1</code> requests per principal per minute; <code>0</code> disables</td></tr>
+<tr><td><code>FLEET_AUTH_FAILURES_PER_MINUTE</code></td><td><code>60</code></td><td>Failed authentications per peer address per minute; <code>0</code> disables</td></tr>
+<tr><td><code>FLEET_METRICS_BIND</code></td><td>unset</td><td>Separate listener for Prometheus <code>/metrics</code>; must differ from <code>FLEET_BIND</code></td></tr>
+<tr><td><code>FLEET_MIGRATE</code></td><td><code>true</code></td><td><code>false</code>: never change the schema; refuse to start until <code>admin migrate</code> has run</td></tr>
+<tr><td><code>FLEET_LOG_MAX_BYTES</code></td><td><code>104857600</code> (100 MiB)</td><td>Rotate the log file at this size (1 MiB to 10 GiB)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Database credentials in <code>FLEET_DATABASE_URL</code> are never logged.</p>
+<h2 id="run-locally-with-sqlite">Run locally with SQLite</h2>
+<pre tabindex="0"><code class="language-sh">export FLEET_DATABASE_URL='sqlite://sendbox-fleet.db?mode=rwc'
+cargo run --bin sendbox-fleet
+
+curl -i http://127.0.0.1:8080/healthz
+curl -i http://127.0.0.1:8080/readyz
+curl -i -X POST http://127.0.0.1:8080/v1/authorize   # 401: authentication required</code></pre>
+<p>Migrations run at startup. Stop the server with Ctrl-C (or <code>SIGTERM</code>); it
+stops accepting connections, gives in-flight requests up to 30 seconds,
+closes the database pool, and flushes logs.</p>
+<h2 id="bootstrap-principals-tokens-and-projects">Bootstrap principals, tokens, and projects</h2>
+<p><code>sendbox-fleet admin</code> acts on the database directly and needs only
+<code>FLEET_DATABASE_URL</code> (and honors <code>FLEET_MIGRATE</code>). Every change is audited
+with the actor <code>cli:admin</code>.</p>
+<pre tabindex="0"><code class="language-sh">sendbox-fleet admin principal add oidc:olivia@example.com --kind user --operator
+sendbox-fleet admin principal add oidc:owen@example.com --kind user
+sendbox-fleet admin principal add worker:ci-1 --kind worker
+sendbox-fleet admin project create github:example/service --owner oidc:owen@example.com
+sendbox-fleet admin token issue oidc:owen@example.com --ttl-days 30 &gt; owen.token
+sendbox-fleet admin token list oidc:owen@example.com
+sendbox-fleet admin token revoke &lt;token-id&gt;
+sendbox-fleet admin principal disable oidc:owen@example.com</code></pre>
+<p><code>token issue</code> prints the token once on stdout; only its SHA-256 is stored.
+People then use the API with <code>Authorization: Bearer &lt;token&gt;</code>, for example:</p>
+<pre tabindex="0"><code class="language-sh">T=$(cat owen.token); U=http://127.0.0.1:8080
+curl -H &quot;Authorization: Bearer $T&quot; $U/v1/whoami
+curl -H &quot;Authorization: Bearer $T&quot; -H 'Content-Type: application/json' \
+  -d '{&quot;principal&quot;:&quot;oidc:alice@example.com&quot;,&quot;role&quot;:&quot;member&quot;}' \
+  &quot;$U/v1/projects/github:example%2Fservice/roles&quot;</code></pre>
+<p>An operator publishes the exact profile and the signature bundle produced by
+<code>sendbox governance sign</code>:</p>
+<pre tabindex="0"><code class="language-sh">jq -n --rawfile document acme.yaml --slurpfile signatures acme.yaml.sig.json \
+  '{document: $document, signatures: $signatures[0]}' |
+  curl -X PUT -H &quot;Authorization: Bearer $OPERATOR_TOKEN&quot; \
+    -H 'Content-Type: application/json' --data @- $U/v1/profiles/acme</code></pre>
+<p>On each SendBox host, the operator configuration names this service and the
+caller stores their own token: <code>sendbox secrets add SENDBOX_FLEET_TOKEN</code>.</p>
+<p>With <code>FLEET_OIDC_CONFIG</code>, people and CI sign in with their identity provider
+instead, and hosts exchange that sign-in for a service token with
+<code>sendbox governance login</code>. See <a href="../deployment/#identity-providers">deployment</a>.</p>
+<p>Other admin commands:</p>
+<pre tabindex="0"><code class="language-sh">sendbox-fleet admin migrate                                  # apply migrations only
+sendbox-fleet admin audit keygen --output audit.key &gt; audit-identity.json
+FLEET_AUDIT_SIGNING_KEY=audit.key sendbox-fleet admin audit anchor --output anchors/
+sendbox-fleet admin audit verify --identity audit-identity.json --anchor anchors/audit-head-*.json</code></pre>
+<h2 id="run-with-postgresql-compose">Run with PostgreSQL (Compose)</h2>
+<pre tabindex="0"><code class="language-sh">cp .env.example .env        # set POSTGRES_PASSWORD (URL-safe characters)
+docker compose build --no-cache &amp;&amp; docker compose up</code></pre>
+<p>The server listens on <code>127.0.0.1:${FLEET_PORT:-8080}</code>. The container runs as
+an unprivileged user with a read-only root filesystem; logs go to the
+<code>fleet-logs</code> volume. <code>docker compose down</code> stops the stack and keeps data;
+<code>docker compose down --volumes</code> also deletes the database and logs.</p>
+<h2 id="checks">Checks</h2>
+<pre tabindex="0"><code class="language-sh">cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo audit --deny warnings          # needs cargo-audit; see .cargo/audit.toml
+scripts/check-contract-pin.sh        # SendBox crates locked to sendbox main</code></pre>
+<p>Tests use in-memory SQLite and synthetic data. To run the migration and API
+tests against PostgreSQL, point <code>FLEET_TEST_DATABASE_URL</code> at a disposable
+database whose name ends in <code>_test</code> (the tests drop and recreate its <code>public</code>
+schema):</p>
+<p>The PostgreSQL run also checks <code>deploy/postgres/roles.sql</code> by connecting as
+its roles, which the trust authentication below allows.</p>
+<pre tabindex="0"><code class="language-sh">docker run -d --name sendbox-fleet-pg-test -p 127.0.0.1:55432:5432 \
+  -e POSTGRES_DB=sendbox_fleet_test -e POSTGRES_USER=sendbox_fleet \
+  -e POSTGRES_HOST_AUTH_METHOD=trust postgres:18.7-alpine3.24
+FLEET_TEST_DATABASE_URL=postgres://sendbox_fleet@127.0.0.1:55432/sendbox_fleet_test \
+  cargo test --locked --workspace --test migrations --test http -- --test-threads=1
+docker rm -f sendbox-fleet-pg-test</code></pre>
+<p>CI runs formatting, Clippy, and tests on SQLite; the migration and API tests
+plus a start, probe, and graceful-stop run of the server on PostgreSQL; and
+<code>cargo audit</code>.</p>
+<h2 id="logs">Logs</h2>
+<ul>
+<li>Every event is a JSON line written to stdout and to
+<code>FLEET_LOG_DIR/sendbox-fleet.YYYY-MM-DD.log</code>. A new file starts at each UTC
+midnight, and whenever the live file reaches <code>FLEET_LOG_MAX_BYTES</code> the next
+part continues in <code>sendbox-fleet.YYYY-MM-DD.1.log</code>, <code>.2.log</code>, and so on.
+Files are created with mode <code>0600</code>.</li>
+<li>Retention runs at startup and then hourly. It deletes only regular files
+named <code>sendbox-fleet.YYYY-MM-DD.log</code> or <code>sendbox-fleet.YYYY-MM-DD.N.log</code>
+whose UTC day ended at least <code>FLEET_LOG_RETENTION_DAYS</code> days ago, judged by
+the date in the name rather than the modification time. Other files, directories, and symlinks are left
+alone; deletion failures are logged and retried at the next run.</li>
+<li>The log directory is created with mode <code>0700</code>.</li>
+<li>File writes go through a bounded queue of 16,384 events. When it is full,
+logging callers wait instead of dropping events.</li>
+<li>Never logged: request bodies, headers (including <code>Authorization</code>), query
+strings, and database credentials.</li>
+</ul>
+<h2 id="migrations">Migrations</h2>
+<p>Schema changes need a new, numbered file in <strong>both</strong> <code>migrations/postgres</code> and
+<code>migrations/sqlite</code> with equivalent constraints. Never edit a migration that
+has been applied anywhere: sqlx records checksums and refuses to start on a
+mismatch. Add a test in <code>crates/fleet-server/tests/migrations.rs</code> for any new
+invariant.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<div class="table-scroll" role="group" aria-label="Troubleshooting table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Symptom</th><th scope="col">Cause</th></tr></thead>
+<tbody>
+<tr><td><code>configuration error: FLEET_DATABASE_URL is required</code> (exit 2)</td><td>Export a database URL</td></tr>
+<tr><td><code>cannot connect to postgres://***@...</code></td><td>Database not reachable or wrong credentials</td></tr>
+<tr><td><code>cannot listen on ...</code></td><td>Port already in use; set <code>FLEET_BIND</code> or <code>FLEET_PORT</code></td></tr>
+<tr><td><code>cannot create log directory</code></td><td><code>FLEET_LOG_DIR</code> not writable by the server user</td></tr>
+<tr><td>Every <code>/v1</code> call returns <code>401 bearer token was not accepted</code></td><td>The token is unknown, expired, revoked, or its principal is disabled; issue a new one with <code>sendbox-fleet admin token issue</code></td></tr>
+<tr><td><code>503 profile signers are not configured</code> on profile publication</td><td>Set <code>FLEET_PROFILE_TRUST</code></td></tr>
+<tr><td><code>409 ... is not the current revision</code> on session admission</td><td>The host's local profile differs from the newest published revision; install the same signed bytes on the host</td></tr>
+<tr><td><code>migrations … are not applied; run sendbox-fleet admin migrate</code></td><td><code>FLEET_MIGRATE=false</code> and the schema is behind; run <code>admin migrate</code> as the schema owner</td></tr>
+<tr><td><code>permission denied for schema public</code> at startup</td><td>The runtime role cannot migrate; set <code>FLEET_MIGRATE=false</code> and migrate as the owner</td></tr>
+<tr><td><code>401</code> for an identity-provider token</td><td>Issuer, audience, expiry, key, required claim, or <code>email_verified</code> did not match, or the principal is unknown, disabled, or of the other kind. The server log names the reason (for example <code>expired</code>, <code>audience_mismatch</code>, <code>not_registered</code>); callers only see <code>401</code></td></tr>
+<tr><td><code>503 identity provider keys are unavailable</code></td><td>The issuer's discovery or JWKS endpoint is unreachable and no keys are cached</td></tr>
+<tr><td><code>429 rate limit exceeded</code></td><td>Wait <code>Retry-After</code> seconds; behind a proxy, see <a href="../deployment/#tls-and-the-reverse-proxy">deployment</a></td></tr>
+<tr><td><code>… must not be accessible by group or others</code></td><td><code>chmod 600</code> the audit signing key</td></tr>
+</tbody>
+</table>
+</div>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/docs/development.md"><code>docs/development.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox-fleet">sendbox-dev/sendbox-fleet</a> at commit <a href="https://github.com/sendbox-dev/sendbox-fleet/commit/962a6cf18913e41995dfde12c872be9497d2b1e9"><code>962a6cf</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox-fleet/edit/main/docs/development.md">edit it in sendbox-dev/sendbox-fleet</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../contributing/"><span class="pager-label">Previous</span> Contributing</a>
+<a class="pager-next" href="../roadmap/"><span class="pager-label">Next</span> Roadmap</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox Fleet documentation">
+<p class="nav-project"><a href="../">SendBox Fleet docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../deployment/">Deployment</a></li>
+<li><a href="../architecture/">Architecture</a></li>
+<li><a href="../contract/">Shared contract</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../threat-model/">Threat model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="./" aria-current="page">Development</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

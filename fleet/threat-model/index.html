@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Threat model | SendBox Fleet docs</title>
+  <meta name="description" content="Assets, adversaries and mitigations for the governance service.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Threat model | SendBox Fleet docs">
+  <meta property="og:description" content="Assets, adversaries and mitigations for the governance service.">
+  <meta property="og:url" content="https://sendbox.synctune.it/fleet/threat-model/">
+  <link rel="canonical" href="https://sendbox.synctune.it/fleet/threat-model/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../sendbox/">SendBox docs</a></li>
+        <li><a href="../" class="is-active">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox Fleet docs</a></li>
+<li><span aria-current="page">Threat model</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox Fleet docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox Fleet · Security</p>
+<h1 id="threat-model">Threat model</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#assets">Assets</a></li>
+<li><a href="#actors">Actors</a></li>
+<li><a href="#threats-and-mitigations">Threats and mitigations</a></li>
+<li><a href="#known-accepted-risks">Known accepted risks</a></li>
+</ol>
+</nav>
+<p>Scope: the shared governance service in this repository and its interfaces to
+SendBox hosts, people, and its database. The SendBox VM boundary, host broker,
+and increment-1 local authority are covered in the sendbox repository.</p>
+<p>Status column: <strong>implemented</strong> means implemented and tested here;
+<strong>documented</strong> means the mitigation is deployment guidance in
+<a href="../deployment/">deployment.md</a>. Remaining work is in <a href="../roadmap/">roadmap.md</a>.</p>
+<h2 id="assets">Assets</h2>
+<ul>
+<li>Authorization decisions: session admission, grants, per-request decisions.</li>
+<li>Policy state: signed profile revisions, minimum revisions, project roles,
+exceptions.</li>
+<li>Audit evidence and its integrity.</li>
+<li>Availability of authorization for running sessions.</li>
+</ul>
+<p>Provider credentials are <strong>not</strong> an asset of this service: they stay in the
+SendBox host broker and never reach the fleet.</p>
+<h2 id="actors">Actors</h2>
+<div class="table-scroll" role="group" aria-label="Actors table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Actor</th><th scope="col">Trust</th></tr></thead>
+<tbody>
+<tr><td>Operator</td><td>Trusted to sign and publish profiles, create projects, and recover ownership</td></tr>
+<tr><td>Project owner, admin, member, viewer</td><td>Trusted within their project role</td></tr>
+<tr><td>SendBox host (user or worker token)</td><td>Trusted to report sessions of the principal whose token it holds; untrusted for anything else</td></tr>
+<tr><td>Service host administrator (<code>sendbox-fleet admin</code>)</td><td>Issues tokens and creates principals; equivalent to database access</td></tr>
+<tr><td>Workload (agent inside a VM)</td><td>Untrusted; never talks to the fleet directly</td></tr>
+<tr><td>Network attacker</td><td>Untrusted</td></tr>
+<tr><td>Database administrator</td><td>Can bypass application controls; mitigated by evidence anchoring</td></tr>
+<tr><td>Identity provider in <code>FLEET_OIDC_CONFIG</code></td><td>Trusted to name principals under its own prefix, within its audience and required claims; nothing else</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="threats-and-mitigations">Threats and mitigations</h2>
+<div class="table-scroll" role="group" aria-label="Threats and mitigations table" tabindex="0">
+<table>
+<thead><tr><th scope="col">#</th><th scope="col">Threat</th><th scope="col">Mitigation</th><th scope="col">Status</th></tr></thead>
+<tbody>
+<tr><td>T1</td><td>Caller spoofs identity with headers such as <code>X-Forwarded-User</code></td><td>Only bearer tokens authenticate; identity headers are ignored; auth runs before routing</td><td>Implemented (tested)</td></tr>
+<tr><td>T2</td><td>Workload-supplied identity in a body is trusted</td><td>Binding and grant principals must equal the authenticated caller; projects and sessions are checked against stored state; <code>local-user:</code> principals rejected by API and schema</td><td>Implemented (tested)</td></tr>
+<tr><td>T3</td><td>Stolen or replayed bearer token</td><td>Service tokens stored only as SHA-256, expiring within 90 days (exchanged ones within <code>FLEET_TOKEN_MAX_TTL_SECONDS</code>, 7 days by default), listable and revocable by their owner, void when the principal is disabled; a service token cannot mint another; identity-provider JWTs need this service's audience and expire in minutes; TLS in front of the service (<a href="../deployment/#tls-and-the-reverse-proxy">deployment</a>)</td><td>Implemented (tested)</td></tr>
+<tr><td>T4</td><td>Compromised worker acts for sessions it does not run</td><td>A caller can only admit, use, renew, or end sessions bound to its own principal; grants bound to session, principal, project, binding digest, and profile revision (composite foreign key)</td><td>Implemented (tested)</td></tr>
+<tr><td>T5</td><td>Stale policy or approval authorizes changed work</td><td>Sessions, grants, and exceptions reference an exact profile revision and digest; a new revision or raised minimum makes them stale; approvals of stale requests are refused; sessions bound to a revoked or expired exception are denied</td><td>Implemented (tested)</td></tr>
+<tr><td>T6</td><td>Grant wider than the profile allows</td><td>Methods and path prefixes must be inside the profile service; lifetime capped by the profile TTL, profile expiry, exception expiry, and 7 days</td><td>Implemented (tested)</td></tr>
+<tr><td>T7</td><td>Audit evidence altered or deleted</td><td>Append-only triggers, contiguous hash chain computed by the service and enforced on insert, <code>GET /v1/audit/verify</code>; runtime role without <code>UPDATE</code>, <code>DELETE</code>, <code>TRUNCATE</code>, or <code>ALTER</code> on audit (<code>deploy/postgres/roles.sql</code>); Ed25519-signed chain heads anchored outside the database and checked by <code>admin audit verify</code></td><td>Implemented (tested)</td></tr>
+<tr><td>T8</td><td>Secrets leak into logs or audit</td><td>No request bodies, headers, or query strings logged; database URL credentials redacted; tokens stored only as digests; no credential columns; audit keeps a redacted target without query strings (schema check) and omits exception reasons</td><td>Implemented (tested)</td></tr>
+<tr><td>T9</td><td>Authority outage silently allows requests</td><td>Hosts deny with <code>authority_unavailable</code> on any non-200 answer, timeout, or redirect; a token lookup failure is <code>503</code></td><td>Implemented (host client tested in sendbox)</td></tr>
+<tr><td>T10</td><td>Exception abuse or self-approval</td><td>Only denials the signed revision lists as liftable; reason; expiry at most the profile's <code>exceptions.max_ttl_seconds</code> and 7 days; approver is a different <code>owner</code> or <code>admin</code> (also a schema check); lifting never widens the ceiling; every request, decision, refusal, use, and revocation audited</td><td>Implemented (tested)</td></tr>
+<tr><td>T11</td><td>Revocation does not stop in-flight traffic</td><td>New requests denied at once; open streams bounded by the profile grace window (at most 60 seconds) on the host; uncertain outcomes audited on the host as <code>aborted_uncertain</code> and centrally as <code>request.outcome</code> with outcome <code>unknown</code></td><td>Implemented (tested)</td></tr>
+<tr><td>T12</td><td>Resource exhaustion</td><td>Body limits (64 KiB, 1 MiB for profile publication), bounded connection pool and acquire timeout, bounded list sizes, non-lossy bounded log queue, per-principal request and per-peer authentication-failure rate limits, at most 20 live exchanged tokens per principal, bounded and throttled JWKS fetches, size-capped log files</td><td>Implemented (tested); limits are per instance</td></tr>
+<tr><td>T13</td><td>Supply-chain compromise</td><td>Actions pinned by commit SHA, images pinned by digest, <code>Cargo.lock</code> committed, contract pinned by git revision, <code>cargo audit</code> in CI with documented exceptions</td><td>Implemented</td></tr>
+<tr><td>T14</td><td>Forged or misdirected identity-provider token</td><td>Exact issuer match against an operator-written list (HTTPS, or HTTP to loopback for tests), audience required, keys only from that issuer's JWKS (no <code>jku</code>, <code>x5u</code>, or embedded keys, no <code>none</code> or HMAC algorithms, <code>crit</code> refused), per-issuer algorithm allowlist, required claims (for example <code>repository_owner</code>), verified email, unique principal prefixes, kind bound to the issuer; auto-provisioned principals get no roles</td><td>Implemented (tested)</td></tr>
+<tr><td>T15</td><td>Rate-limit bypass or lockout behind a proxy</td><td>The failure limit keys on the TCP peer and ignores <code>X-Forwarded-For</code>; deployment guidance to limit per client at the proxy</td><td>Documented</td></tr>
+<tr><td>T16</td><td>Metrics leak identities</td><td>Metrics on a separate listener, labels limited to status classes and decision codes</td><td>Implemented (tested)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="known-accepted-risks">Known accepted risks</h2>
+<ul>
+<li><code>RUSTSEC-2026-0459</code> (bundled SQLite older than the fix): SQLite is used
+only for local development and tests on files the service creates. The fix
+is libsqlite3-sys 0.39, which sqlx 0.9.0 does not allow yet. Tracked in
+<a href="../roadmap/">roadmap.md</a>.</li>
+<li>Database triggers do not stop a database owner or superuser. Run the
+service with <code>sendbox_fleet_app</code> and anchor chain heads on storage those
+administrators cannot rewrite; then a rewrite is detected, though not
+prevented.</li>
+<li>An identity-provider compromise can sign in as any principal that provider
+names. Limit each issuer's prefix, audience, and required claims, and keep
+<code>auto_provision</code> off where it is not needed.</li>
+</ul>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/docs/threat-model.md"><code>docs/threat-model.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox-fleet">sendbox-dev/sendbox-fleet</a> at commit <a href="https://github.com/sendbox-dev/sendbox-fleet/commit/962a6cf18913e41995dfde12c872be9497d2b1e9"><code>962a6cf</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox-fleet/edit/main/docs/threat-model.md">edit it in sendbox-dev/sendbox-fleet</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../contract/"><span class="pager-label">Previous</span> Shared contract</a>
+<a class="pager-next" href="../security-policy/"><span class="pager-label">Next</span> Reporting vulnerabilities</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox Fleet documentation">
+<p class="nav-project"><a href="../">SendBox Fleet docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../deployment/">Deployment</a></li>
+<li><a href="../architecture/">Architecture</a></li>
+<li><a href="../contract/">Shared contract</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="./" aria-current="page">Threat model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../development/">Development</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

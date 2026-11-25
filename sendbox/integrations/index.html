@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Integrations | SendBox docs</title>
+  <meta name="description" content="MCP, GitHub, model providers, private registries, devcontainers and CI workflows.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Integrations | SendBox docs">
+  <meta property="og:description" content="MCP, GitHub, model providers, private registries, devcontainers and CI workflows.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/integrations/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/integrations/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Integrations</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Get started</p>
+<h1 id="integrating-sendbox-into-your-workflow">Integrating SendBox into your workflow</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#coding-agents-and-model-providers">Coding agents and model providers</a></li>
+<li><a href="#mcp-tools-local-servers-and-remote-services">MCP tools: local servers and remote services</a></li>
+<li><a href="#github-repository-access-and-bounded-writes">GitHub: repository access and bounded writes</a></li>
+<li><a href="#npm-and-private-registries">npm and private registries</a></li>
+<li><a href="#vs-code-and-devcontainer-tooling">VS Code and devcontainer tooling</a></li>
+<li><a href="#ci-scripts-and-custom-orchestrators">CI, scripts, and custom orchestrators</a></li>
+</ol>
+</nav>
+<p>SendBox's integration surface is a CLI, YAML policy, and standard agent/MCP
+configuration. The controls below are built in; connecting them to your editor,
+job runner, or orchestration service is a workflow you compose, not a separate
+managed SendBox service.</p>
+<h2 id="coding-agents-and-model-providers">Coding agents and model providers</h2>
+<p>Select a profile when creating project configuration:</p>
+<pre tabindex="0"><code class="language-bash">sendbox init --project . --agent codex</code></pre>
+<p>Profiles exist for Moguri, Claude Code, Codex CLI, GitHub Copilot CLI, Gemini CLI,
+and OpenCode. Custom CLI programs use <code>--agent custom</code> and explicit
+command/network rules. Install the agent in your digest-pinned Linux workload
+image, then pass its absolute guest executable path after <code>sendbox run ... --</code>.</p>
+<p>Profiles admit initial inference endpoints, not every possible provider or
+plugin. For example, an OpenCode session using a separate model provider needs
+that provider's exact endpoints in <code>policy.network.allowed_domains</code>.
+Authentication and telemetry may require additional hosts too.</p>
+<p>Store API keys with <code>sendbox secrets add NAME</code> and reference only the keys the
+workload needs in <code>secrets</code>. Copilot credential forwarding is independent of
+GitHub repository credentials; selecting another agent disables unrelated
+Copilot forwarding.</p>
+<p>See <a href="../cli-agents/">CLI agents</a> for profile endpoints, authentication, proxy
+compatibility, and native sandbox settings.</p>
+<h2 id="mcp-tools-local-servers-and-remote-services">MCP tools: local servers and remote services</h2>
+<p>Apple and Kata sessions support both local stdio servers and remote Streamable
+HTTP servers. This lets an agent use project tools, documentation search, or
+repository services without treating every tool exposed by a server as allowed.</p>
+<p>For a preinstalled local server, merge a server definition into your policy:</p>
+<pre tabindex="0"><code class="language-yaml">policy:
+  boundaries:
+    enabled: true
+    tool_calls:
+      servers:
+        files:
+          transport: stdio
+          command: [/usr/local/bin/project-mcp-server]
+          tools:
+            default_action: deny
+            allowlist: [read_file, list_directory]</code></pre>
+<p>Replace the example executable and tool names with your server's actual
+interface. Configure the agent to launch it through the trusted broker:</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;mcpServers&quot;: {
+    &quot;files&quot;: {
+      &quot;command&quot;: &quot;/run/sendbox-boundary/mcp-broker&quot;,
+      &quot;args&quot;: [&quot;--&quot;, &quot;/usr/local/bin/project-mcp-server&quot;]
+    }
+  }
+}</code></pre>
+<p>The JSON container above fits Claude-style configuration; other agents use
+their own native formats. The broker matches exact server identities, filters
+discovery, and checks calls against the signed tool policy.</p>
+<p>Remote services use a trusted loopback gateway rather than direct upstream
+URLs in the agent configuration. Bearer credentials can be delivered only to
+the gateway, separate from workload secrets. Legacy HTTP+SSE, OAuth helpers, and
+unapproved launchers are not supported fallback paths.</p>
+<p>See <a href="../cli-agents/#native-mcp-configuration">native MCP configuration</a> and
+<a href="../mcp-inspection/">MCP inspection</a> for complete stdio, remote, authentication,
+and audit examples.</p>
+<h2 id="github-repository-access-and-bounded-writes">GitHub: repository access and bounded writes</h2>
+<p>For normal Git workflows, SendBox can forward repository-scoped GitHub
+credentials through authenticated guest delivery and guard selected-repository
+pushes and pulls by branch. SSH uses a trusted wrapper and narrowly staged key
+material rather than mounting your host SSH directory.</p>
+<p>For automation that should not hold a GitHub write token inside the VM,
+<strong>Safe Outputs</strong> provides a different path:</p>
+<ol>
+<li>The agent declares an allowed write through a trusted MCP recorder.</li>
+<li>The guest seals the bounded artifact, and the runtime is torn down.</li>
+<li>The host verifies the artifact; apply mode then resolves a dedicated write
+token and executes only admitted operations.</li>
+</ol>
+<p>Safe Outputs is optional, disabled by default, and defaults to staged preview
+when enabled. It requires exact repository/operation limits and cannot be
+combined with ordinary GitHub credential or SSH forwarding. It is not a general
+GitHub API pass-through, and asset uploads are unsupported.</p>
+<p>See <a href="../configuration/#github-and-mcp-boundaries">GitHub configuration</a> and
+<a href="../architecture/safe-outputs/">Safe Outputs</a>. Keep GitHub server-side rulesets
+enabled; local Git wrappers do not govern alternate clients or direct API writes.</p>
+<h2 id="npm-and-private-registries">npm and private registries</h2>
+<p>Enable <code>policy.packages.enabled</code> to route supported npm traffic through a
+trusted inspection proxy. It quarantines artifacts, checks identity and
+integrity, evaluates configured signature/provenance requirements, and applies
+static finding policies before releasing package bytes.</p>
+<p>Private registry credentials belong in the vault and are referenced by
+<code>policy.packages.registries[].credential_secret</code>, not workload <code>secrets</code>.
+The current implementation supports exactly one npm registry; it is not yet a
+universal package-manager firewall. Lifecycle scripts are disabled.</p>
+<p>See the <a href="../package-supply-chain/">package supply-chain guide</a> for registry
+configuration, findings, exceptions, caching, and report commands.</p>
+<h2 id="vs-code-and-devcontainer-tooling">VS Code and devcontainer tooling</h2>
+<p>Generate a standard devcontainer spec from native project analysis:</p>
+<pre tabindex="0"><code class="language-bash">sendbox analyze --project . --json
+sendbox devcontainer generate --project .</code></pre>
+<p>The generated <code>.devcontainer/devcontainer.json</code> can be consumed by tools
+supporting the <a href="https://containers.dev/overview">Dev Container Specification</a>.
+Use it to share tooling setup with teammates or editor workflows.</p>
+<p><strong>A devcontainer spec is not the SendBox runtime boundary.</strong> Opening the
+generated configuration in another tool does not automatically install the
+signed guest services, enforce SendBox policy, or give each workload a dedicated
+kernel. That depends on the runtime used to launch it.</p>
+<p>See the <a href="../cli-reference/">CLI reference</a> for generation options.</p>
+<h2 id="ci-scripts-and-custom-orchestrators">CI, scripts, and custom orchestrators</h2>
+<p>Use headless <code>sendbox run</code> on a runner with a prepared runtime, verified guest
+artifacts, and access to the selected virtualization device/control plane.
+Do not assume an arbitrary hosted CI runner supports nested virtualization.</p>
+<pre tabindex="0"><code class="language-bash">sendbox policy validate --config .sendbox.yaml
+
+# Set these to your prepared image and verified, root-owned guest artifacts.
+sendbox run --json \
+  --config .sendbox.yaml \
+  --image &quot;$WORKLOAD_IMAGE&quot; \
+  --bundle &quot;$GUEST_DIR/bundle&quot; \
+  --trust-root &quot;$GUEST_DIR/release-public.key&quot; \
+  -- /usr/local/bin/your-agent --your-headless-option</code></pre>
+<p>Replace the executable and headless option with your agent's actual interface,
+and admit that command in policy. <code>--json</code> emits machine-readable output,
+result, and error events; it cannot be combined with <code>--interactive</code>. Binary
+workload output is hex encoded. Preserve the process exit status when wrapping
+the command in a script.</p>
+<p>SendBox supplies session isolation and lifecycle controls, not runner
+provisioning, a remote execution API, or a multi-tenant scheduler. Your
+orchestrator owns scheduling, credentials, artifact collection, and workspace
+allocation. Use separate workspaces for concurrent jobs rather than allowing
+agents to race on the same writable checkout.</p>
+<p>See <a href="../cli-reference/">CLI reference</a>, <a href="../qualification/">qualification</a>, and
+<a href="../architecture/session-security-lifecycle/">session security lifecycle</a>.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/integrations.md"><code>docs/integrations.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/integrations.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../cli-agents/"><span class="pager-label">Previous</span> CLI agents</a>
+<a class="pager-next" href="../similar-tools/"><span class="pager-label">Next</span> Similar tools</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="./" aria-current="page">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

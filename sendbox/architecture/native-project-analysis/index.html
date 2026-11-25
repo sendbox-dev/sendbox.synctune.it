@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Native project analysis | SendBox docs</title>
+  <meta name="description" content="sendbox-project is the deterministic Rust implementation of project detection and devcontainer generation. It does not start project processes, evaluate…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Native project analysis | SendBox docs">
+  <meta property="og:description" content="sendbox-project is the deterministic Rust implementation of project detection and devcontainer generation. It does not start project processes, evaluate…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/native-project-analysis/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/native-project-analysis/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Native project analysis</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="native-project-analysis">Native project analysis</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#scanning">Scanning</a></li>
+<li><a href="#analysis-compatibility">Analysis compatibility</a></li>
+<li><a href="#optional-refinement">Optional refinement</a></li>
+<li><a href="#devcontainer-generation">Devcontainer generation</a></li>
+<li><a href="#cli">CLI</a></li>
+</ol>
+</nav>
+<p><code>sendbox-project</code> is the deterministic Rust implementation of project detection
+and devcontainer generation. It does not start project processes, evaluate
+manifests, run package scripts, or require Node.js or Copilot.</p>
+<h2 id="scanning">Scanning</h2>
+<p>The scanner traverses entries in lexical order and never follows symbolic links.
+Regular files are opened only after metadata checks, and Unix file identities are
+checked again after opening to detect symlink or rename races. The default limits
+are:</p>
+<div class="table-scroll" role="group" aria-label="Scanning table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Limit</th><th scope="col" class="align-right">Default</th></tr></thead>
+<tbody>
+<tr><td>Directory depth</td><td class="align-right">12</td></tr>
+<tr><td>Files visited</td><td class="align-right">4,096</td></tr>
+<tr><td>Manifest bytes read</td><td class="align-right">8 MiB</td></tr>
+<tr><td>Bytes per manifest</td><td class="align-right">1 MiB</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>sendbox analyze</code> exposes each limit as a flag. Limit hits, symlinks,
+permission failures, files changed during scanning, and malformed manifests are
+reported in <code>scan.skipped</code> or <code>scan.errors</code>; they are not converted into a
+success-shaped fallback.</p>
+<p>The analyzer safely parses JSON, TOML, XML, and bounded static text for the
+languages and tools supported by the pre-rewrite analysis schema: Node.js and
+TypeScript, Python, Rust, Go, Java and Kotlin, Ruby, C and C++, .NET, PHP,
+Elixir, and Swift. <code>Package.swift</code>, Gradle files, Gemfiles, and <code>mix.exs</code> are
+inspected as text only and are never executed.</p>
+<h2 id="analysis-compatibility">Analysis compatibility</h2>
+<p>The native <code>ProjectAnalysis</code> keeps the bridge field names and meanings:</p>
+<ul>
+<li><code>language</code>, <code>framework</code>, <code>packageManager</code>, <code>buildSystem</code>, <code>runtimeVersion</code></li>
+<li><code>dependencies</code>, <code>devDependencies</code></li>
+<li><code>hasDockerfile</code>, <code>hasDevContainer</code>, <code>detectedFiles</code></li>
+<li><code>suggestedImage</code>, <code>suggestedFeatures</code>, <code>suggestedExtensions</code></li>
+</ul>
+<p>Intentional native differences:</p>
+<ul>
+<li>scanning is recursive and bounded instead of unbounded root-only existence
+checks;</li>
+<li>dependencies and development dependencies are sorted and deduplicated;</li>
+<li>native parsing covers additional structured dependency data in <code>pyproject.toml</code>,
+<code>pom.xml</code>, Composer files, and .NET projects;</li>
+<li><code>languages</code> reports all detected project languages;</li>
+<li><code>scan</code> reports limits, skipped entries, and errors explicitly;</li>
+<li><code>refinement.status</code> is always present and is <code>not_requested</code>, <code>applied</code>, or
+<code>failed</code>.</li>
+</ul>
+<p>Checked-in fixtures lock the compatibility field names and representative
+native output without making live model calls.</p>
+<h2 id="optional-refinement">Optional refinement</h2>
+<p><code>RefinementProvider</code> is separate from deterministic analysis. A provider may
+return changes to image, features, extensions, framework, or runtime version.
+Native analysis remains valid without a provider, and provider failures are
+returned as errors while the analysis records that refinement failed. No Node or
+Copilot implementation is required by the Rust crate.</p>
+<h2 id="devcontainer-generation">Devcontainer generation</h2>
+<p>Generation starts with the compatibility image, features, extensions,
+settings, ports, remote user, and post-create command. Merge precedence is:</p>
+<ol>
+<li>generated native defaults;</li>
+<li>an existing <code>.devcontainer/devcontainer.json</code>;</li>
+<li>typed Rust or CLI overrides.</li>
+</ol>
+<p>Objects are merged recursively. Features, settings, and <code>containerEnv</code> merge by
+key. Extensions and forwarded ports are sorted and deduplicated. Unknown
+devcontainer properties are preserved.</p>
+<p>Existing files are parsed as JSONC with string-aware line comments, block
+comments, and trailing commas. Rewriting produces deterministic JSON, so comments
+from the input are intentionally not preserved; JSON output reports
+<code>commentsPreserved: false</code>.</p>
+<p>Output must remain beneath the canonical project directory. Existing output
+symlinks are rejected. The parent directory is created with private permissions
+on Unix, and a mode <code>0600</code> temporary file is flushed, synchronized, and atomically
+renamed into place.</p>
+<h2 id="cli">CLI</h2>
+<pre tabindex="0"><code class="language-bash"># Human-readable summary
+sendbox analyze --project .
+
+# Complete deterministic JSON
+sendbox analyze --project . --json
+
+# Generate or merge .devcontainer/devcontainer.json
+sendbox devcontainer generate --project . --json
+
+# Apply typed overrides
+sendbox devcontainer generate \
+  --project . \
+  --image mcr.microsoft.com/devcontainers/rust:1-bookworm \
+  --feature 'ghcr.io/devcontainers/features/github-cli:1={}' \
+  --extension rust-lang.rust-analyzer \
+  --container-env RUST_BACKTRACE=1 \
+  --json</code></pre>
+<p>Automation exit codes are scoped to these commands:</p>
+<div class="table-scroll" role="group" aria-label="CLI table" tabindex="0">
+<table>
+<thead><tr><th scope="col" class="align-right">Code</th><th scope="col">Meaning</th></tr></thead>
+<tbody>
+<tr><td class="align-right">0</td><td>Analysis or generation completed</td></tr>
+<tr><td class="align-right">2</td><td>CLI usage error, or existing <code>policy validate</code> validation failure</td></tr>
+<tr><td class="align-right">3</td><td>Project root or analysis failure</td></tr>
+<tr><td class="align-right">4</td><td>Devcontainer parse, merge, or output failure</td></tr>
+</tbody>
+</table>
+</div>
+<p>Project analysis and devcontainer generation are fully native and require no
+Node.js process or external refinement service.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/native-project-analysis.md"><code>docs/architecture/native-project-analysis.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/native-project-analysis.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../agent-orchestration/"><span class="pager-label">Previous</span> Agent orchestration</a>
+<a class="pager-next" href="../rust-cli-parity/"><span class="pager-label">Next</span> Rust CLI</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="./" aria-current="page">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

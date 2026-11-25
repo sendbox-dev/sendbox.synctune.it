@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Egress enforcement | SendBox docs</title>
+  <meta name="description" content="Status: production runtime integration. This document describes the sendbox-egress crate and its authenticated host/guest composition, which promotes the…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Egress enforcement | SendBox docs">
+  <meta property="og:description" content="Status: production runtime integration. This document describes the sendbox-egress crate and its authenticated host/guest composition, which promotes the…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/egress-enforcement/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/egress-enforcement/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Egress enforcement</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="production-egress-enforcement-architecture-sendbox-egress">Production egress enforcement architecture (<code>sendbox-egress</code>)</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#goals">Goals</a></li>
+<li><a href="#two-layers">Two layers</a></li>
+<li><a href="#identity-cgroup-v2--so_mark-never-meta-cgroup">Identity: cgroup v2 + <code>SO_MARK</code>, never <code>meta cgroup</code></a></li>
+<li><a href="#broker-front-ends">Broker front ends</a></li>
+<li><a href="#descriptor-relative-cgroup-operations">Descriptor-relative cgroup operations</a></li>
+<li><a href="#safe-setup-ordering-never-fail-open">Safe setup ordering (never fail open)</a></li>
+<li><a href="#authenticated-production-composition">Authenticated production composition</a></li>
+<li><a href="#atomic-apply--update--rollback-and-fail-closed-teardown">Atomic apply / update / rollback and fail-closed teardown</a></li>
+<li><a href="#data-flow-armed-sandbox">Data flow (armed sandbox)</a></li>
+<li><a href="#remote-mcp-reservation-and-bypass-protection">Remote MCP reservation and bypass protection</a></li>
+<li><a href="#policy-source-of-truth">Policy source of truth</a></li>
+<li><a href="#testing-and-qualification">Testing and qualification</a></li>
+</ol>
+</nav>
+<p>Status: <strong>production runtime integration</strong>. This document describes the
+<code>sendbox-egress</code> crate and its authenticated host/guest composition, which
+promotes the proven
+<code>spikes/egress-enforcement</code> mechanism into a production workspace crate. The
+spike is left intact for reference; nothing here depends on it.</p>
+<p>The companion document
+<a href="../../egress-trust-boundary/"><code>docs/security/egress-enforcement-trust-boundary.md</code></a>
+covers the trust boundary, threat model, residual risks, and the runtime
+integration contract.</p>
+<h2 id="goals">Goals</h2>
+<p>Constrain a sandboxed agent's outbound network access to exactly what a
+<a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/crates/sendbox-policy/src/lib.rs"><code>sendbox_policy::NetworkPolicy</code></a>
+permits, and do so with a mechanism that:</p>
+<ul>
+<li>fails closed — no agent traffic is possible until every control is armed and
+verified;</li>
+<li>ties enforcement to a <strong>kernel-stable process identity</strong> (cgroup v2), not a
+shared UID that any process could assume;</li>
+<li>validates DNS answers and pins the exact validated address, defeating DNS
+rebinding;</li>
+<li>gives the package registry proxy a third kernel identity that can reach only
+its trusted loopback SOCKS gateway;</li>
+<li>bounds DNS query-name exfiltration deterministically, without entropy
+heuristics;</li>
+<li>forbids <code>unsafe</code> Rust and never shells out.</li>
+</ul>
+<h2 id="two-layers">Two layers</h2>
+<h3 id="portable-policy-core-all-platforms">Portable policy core (all platforms)</h3>
+<div class="table-scroll" role="group" aria-label="Portable policy core (all platforms) table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Module</th><th scope="col">Responsibility</th></tr></thead>
+<tbody>
+<tr><td><code>address</code></td><td>Classifies destination addresses (loopback, link-local, RFC 1918, ULA, multicast, cloud metadata, unspecified) and canonicalizes IPv4-mapped IPv6.</td></tr>
+<tr><td><code>domain</code></td><td>RFC 1035 domain normalization and exact/wildcard pattern matching.</td></tr>
+<tr><td><code>policy</code></td><td>Compiles <code>sendbox_policy::NetworkPolicy</code> into a <code>PolicyEngine</code> of deterministic, side-effect-free decisions.</td></tr>
+<tr><td><code>authorization</code></td><td>Bounded, expiring <code>(name, ip)</code> authorization cache — the anti-rebinding pin. Prunes expired entries on insert and enforces a deterministic hard capacity derived from the DNS budget.</td></tr>
+<tr><td><code>resolver</code></td><td>The injectable <code>UpstreamResolver</code> trait and <code>ResolvedChain</code>.</td></tr>
+<tr><td><code>forwarding_resolver</code></td><td>Bounded, fixed-upstream forwarding resolver: connects UDP to the exact upstream address <strong>and</strong> port, validates response id/question, bounds records/CNAME depth, recovers over the same upstream's TCP on truncation or UDP silence within the original deadline, and merges A/AAAA only when their CNAME chain and final owner agree.</td></tr>
+<tr><td><code>dns_budget</code></td><td>Deterministic, bounded DNS exfiltration controls (structural limits, QTYPE allowlist, response cap, per-window budgets).</td></tr>
+<tr><td><code>connect_proto</code></td><td>The small, versioned, bounded CONNECT framing protocol.</td></tr>
+<tr><td><code>socks5</code></td><td>A bounded SOCKS5 (RFC 1928) front end: no-auth negotiation, CONNECT only.</td></tr>
+<tr><td><code>dns_broker</code></td><td>Loopback DNS broker: decodes/validates/authorizes, applies budgets, emits audit events.</td></tr>
+<tr><td><code>connect_broker</code></td><td>Loopback CONNECT broker: selectable front end, pins the validated address, re-checks the port-aware decision, dials via a <code>Dialer</code>, proxies bytes.</td></tr>
+<tr><td><code>gateway</code></td><td>Colocates both brokers so they share one <code>AuthorizationCache</code>, engine, guard, and audit sink.</td></tr>
+<tr><td><code>github_meta</code></td><td>Validates whole official Meta documents and host-supplied seeds; owns expiring immutable snapshots and provenance.</td></tr>
+<tr><td><code>github_meta_client</code></td><td>Host-side anonymous fixed-origin HTTPS: system DNS, exact-IP direct dials, verified TLS, bounded bodies, rate-limit detection, and no redirects or environment proxy.</td></tr>
+<tr><td><code>audit</code></td><td>Typed, deterministic, serializable audit events and sinks.</td></tr>
+<tr><td><code>dialer</code></td><td>The <code>Dialer</code> abstraction and <code>SO_MARK</code>-aware socket helpers.</td></tr>
+<tr><td><code>runtime</code></td><td>Session-derived authenticated runtime policy, stable instance/table/mark identity, execution-cgroup parent, and exact proxy environment.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The core performs no privileged operations and is exercised by the unit tests in
+each module plus the portable <code>tests/gateway_integration.rs</code> suite.</p>
+<h3 id="linux-enforcement-layer-cfgtarget_os--linux">Linux enforcement layer (<code>cfg(target_os = &quot;linux&quot;)</code>)</h3>
+<div class="table-scroll" role="group" aria-label="Linux enforcement layer (cfg(target_os = &quot;linux&quot;)) table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Module</th><th scope="col">Responsibility</th></tr></thead>
+<tbody>
+<tr><td><code>linux::cgroup</code></td><td>Supervisor-owned stable cgroup v2 hierarchy (<code>sendbox/&lt;instance&gt;/{agent,broker,registry}</code>), with optional <code>pids</code>/<code>memory</code>/<code>cpu</code> delegation through the agent ancestor for descendant execution leaves.</td></tr>
+<tr><td><code>linux::mark</code></td><td><code>SO_MARK</code> socket helpers (via <code>socket2</code>) and the <code>MarkDialer</code>.</td></tr>
+<tr><td><code>linux::nft</code></td><td>Deterministic nftables rendering keyed on <code>socket cgroupv2</code> + <code>meta mark</code>; atomic apply/validate/cleanup/verify via <code>nft -f -</code> (stdin, no shell, no temp files).</td></tr>
+<tr><td><code>linux::preflight</code></td><td>cgroup v2, <code>nft socket cgroupv2</code> support, <code>CAP_NET_ADMIN</code>, and <code>SO_MARK</code> probes.</td></tr>
+<tr><td><code>linux::supervisor</code></td><td>The armed guard enforcing setup ordering, teardown, and atomic update/rollback.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="identity-cgroup-v2--so_mark-never-meta-cgroup">Identity: cgroup v2 + <code>SO_MARK</code>, never <code>meta cgroup</code></h2>
+<p>The spike keyed nftables on <code>meta skuid</code> (UID). Any process sharing that UID
+could originate broker-class traffic. The production layer instead keys on
+<code>socket cgroupv2 level N &quot;path&quot;</code>:</p>
+<ul>
+<li>The supervisor owns a stable hierarchy <code>sendbox/&lt;instance&gt;/agent</code>,
+<code>sendbox/&lt;instance&gt;/broker</code>, and <code>sendbox/&lt;instance&gt;/registry</code> under the
+cgroup v2 root. The <code>level</code> in each nftables rule equals the number of path
+components.</li>
+<li>The <strong>agent cgroup ancestor</strong>, including every nested execution leaf beneath
+it, may only originate traffic to the loopback DNS and public CONNECT broker
+ports plus the workload-facing npm proxy port when package analysis is
+enabled.</li>
+<li>The <strong>broker cgroup</strong> may originate external traffic <strong>only when the socket
+also carries the fixed <code>SO_MARK</code></strong> (<code>meta mark</code>), and never to cloud-metadata
+addresses.</li>
+<li>The <strong>registry cgroup</strong> may originate traffic only to the registry-only
+loopback SOCKS port. It cannot reach the public broker ports, external
+destinations, or obtain the broker mark.</li>
+</ul>
+<p><code>meta cgroup</code> (cgroup v1 <code>net_cls</code>) is deliberately never emitted; a test
+asserts its absence.</p>
+<p>Production execution uses:</p>
+<pre tabindex="0"><code class="language-text">/sys/fs/cgroup/sendbox/&lt;instance&gt;/agent/&lt;session&gt;/&lt;command&gt;</code></pre>
+<p>The nftables identity remains the level-3 <code>agent</code> ancestor, so every execution
+descendant inherits the same network boundary. The agent ancestor is an internal
+cgroup: direct process placement is rejected once controllers are delegated.</p>
+<p>Because SO_MARK must be set on <em>every</em> broker-originated external socket, both
+the CONNECT broker's dials (<code>MarkDialer</code>) and the DNS forwarding resolver's
+upstream sockets (<code>ForwardingResolverConfig::with_socket_mark</code>) apply the mark.</p>
+<h2 id="broker-front-ends">Broker front ends</h2>
+<p>The CONNECT broker speaks one of two client-facing protocols, selected once per
+instance via <code>ConnectBrokerConfig::frontend</code> (never auto-detected from the first
+bytes, which would be ambiguous and attacker-influenceable):</p>
+<ul>
+<li><code>ConnectFrontend::Custom</code> (default) — the crate's small, versioned, bounded
+framing (<code>connect_proto</code>), which also carries an optional client <code>expected_ip</code>
+consistency check.</li>
+<li><code>ConnectFrontend::Socks5</code> — standard SOCKS5 (RFC 1928), no-authentication
+negotiation, <code>CONNECT</code> only. <code>BIND</code> and <code>UDP ASSOCIATE</code> are refused with
+<code>Command not supported</code>, which is how UDP/QUIC is denied at the SOCKS layer.</li>
+<li><code>ConnectFrontend::Http</code> — bounded HTTP/1.x CONNECT plus absolute-form HTTP
+forwarding, with matching authority/Host validation and strict body framing.
+Proxy credentials and ambiguous framing are rejected.</li>
+</ul>
+<p>All front ends funnel through the <em>same</em> <code>authorize_and_dial</code> path: resolve and
+pin a hostname (or validate a direct IP), re-check the full port-aware policy
+decision, and dial the exact validated <code>SocketAddr</code> through the <code>Dialer</code>. Only
+the wire framing and the reply-code mapping differ. A runtime selects the SOCKS5
+front end when the agent toolchain speaks standard SOCKS5 (e.g. an
+<code>ALL_PROXY=socks5h://host:port</code> environment), and the default custom front end
+otherwise. The SOCKS5 success reply reports the broker's <em>upstream</em> socket local
+endpoint in <code>BND.ADDR</code>/<code>BND.PORT</code> (<code>upstream.local_addr()</code>, per RFC 1928 §6),
+not the requested destination; the custom front end sends no bound address, so
+this does not weaken it.</p>
+<p>A fresh hostname resolution on the CONNECT path is not a policy bypass: it runs
+the name through the <em>same</em> shared <code>DnsGuard</code> as the DNS broker — structural
+QNAME limits, the QTYPE allowlist, the response-record cap, and the
+deterministic exfiltration budget — and audits any denial or rate limit. When
+<code>allow_dns = false</code> the CONNECT broker performs no fresh resolution at all and
+relies solely on prior cached authorizations, so disabling DNS truly closes the
+resolution path.</p>
+<h3 id="resolver-loss-handling-and-diagnostics">Resolver loss handling and diagnostics</h3>
+<p>The forwarding resolver gives each concurrent A/AAAA query one absolute
+three-second deadline. A missing UDP reply is retransmitted once halfway
+through that budget, preserving the connected socket, upstream, socket mark,
+question and ID. If UDP is still pending at that halfway boundary, one TCP
+exchange also starts against the same numeric upstream and port, with the same
+question/ID and socket mark. UDP remains live; a TCP transport failure cannot
+discard its later valid reply. A validated UDP truncation flag starts TCP
+immediately instead. Socket setup, both UDP sends and that one TCP exchange
+consume the original budget; no phase restarts it. Complete TCP responses still
+require exact header/question validation and a clear truncation bit. Permanent
+response errors and invalid replies fail closed, not a later-answer fallback.</p>
+<p>Both family results must complete before CNAME agreement and policy validation
+can authorize any address. A timeout, cancellation, or denied CNAME does not
+prime the shared authorization cache. The brokers retain their separate
+five-second upstream-resolution bounds and cancellation gates.</p>
+<p>Resolver failures retain typed, sanitized query/transport/operation and OS-code
+metadata in <code>DnsResolutionFailed</code> audit events. HTTP CONNECT keeps status 502
+but returns a DNS <code>Proxy-Status</code> and bounded JSON diagnostic; free-form upstream
+errors and packet contents are excluded. SOCKS/native status bytes do not
+change. See <a href="../../dns-cold-start/">cold-start qualification</a> for the distinction
+between local service readiness, an external DNS failure and controlled loss
+testing.</p>
+<h2 id="descriptor-relative-cgroup-operations">Descriptor-relative cgroup operations</h2>
+<p>Every cgroup filesystem operation is <strong>descriptor-relative and symlink-race
+resistant</strong>. <code>linux::cgroup</code> opens the cgroup v2 root once as a capability
+<code>cap_std::fs::Dir</code> and performs all hierarchy creation, <code>cgroup.procs</code> writes,
+and removals relative to that descriptor. <code>cap-std</code> confines resolution beneath
+the opened root (Linux <code>openat2</code>/<code>RESOLVE_BENEATH</code>), so a symlink planted under
+the root can never redirect an operation outside it; a regression test proves an
+escaping symlink is refused.</p>
+<h3 id="cgroup-identity-and-the-required-nft-mount-view">cgroup identity and the required nft mount view</h3>
+<p>The hierarchy is created directly under the mounted cgroup v2 root
+(<code>&lt;root&gt;/sendbox/&lt;instance&gt;/…</code>), so the <code>CgroupIdentity</code> nftables matches on is
+exactly that <strong>mount-relative</strong> path: nftables userspace <em>stats</em>
+<code>/sys/fs/cgroup/&lt;identifier&gt;</code> to resolve a <code>socket cgroupv2</code> rule, and the kernel
+adds the current cgroup-namespace subtree level internally — it is not a
+process-cgroup-prefixed global path. The same mount-relative path is reused for
+the filesystem operations and for the agent, broker, and registry process
+placement accessors.</p>
+<p>Because that resolution is a userspace <code>stat</code> in nft's <em>own</em> mount namespace,
+whatever executes <code>nft</code> must keep the supervisor's mount view of
+<code>/sys/fs/cgroup</code>. The live harness therefore runs nft with
+<code>nsenter --net=/var/run/netns/&lt;ns&gt; -- nft …</code>, which enters only the target
+<strong>network</strong> namespace. <code>ip netns exec</code> must <strong>not</strong> be used here: it additionally
+unshares the mount namespace and remounts <code>/sys</code>, hiding the owned cgroups from
+nft's <code>stat</code> and yielding <code>cgroupv2 path fails: No such file or directory</code> even
+though the network namespace is correct. The live suite gates on <code>nsenter</code>
+availability (util-linux).</p>
+<h2 id="safe-setup-ordering-never-fail-open">Safe setup ordering (never fail open)</h2>
+<p><code>ArmedEgress::arm</code> performs, in order:</p>
+<ol>
+<li><strong>Preflight</strong> — cgroup v2 mounted, <code>nft socket cgroupv2</code> supported,
+<code>CAP_NET_ADMIN</code> held, <code>SO_MARK</code> settable. Any gap is a hard error.</li>
+<li><strong>Create the stable cgroup hierarchy</strong> and, for production execution,
+delegate required controllers through
+<code>root -&gt; sendbox -&gt; instance -&gt; agent</code>.</li>
+<li><strong>Validate</strong> the rendered ruleset with <code>nft --check -f -</code> against the real
+cgroup paths (the definitive <code>socket cgroupv2</code> support/resolution check).</li>
+<li><strong>Apply</strong> the ruleset atomically with <code>nft -f -</code>.</li>
+<li><strong>Verify</strong> the owned table is installed (<code>nft list table</code>).</li>
+<li>Only then return the <code>ArmedEgress</code> guard.</li>
+</ol>
+<p>Any failure at or after step 2 best-effort unwinds only what <em>this call</em> created
+and returns an error. Because a failed <code>nft</code> apply is atomic (the whole
+transaction rolls back), a failed <strong>re-arm</strong> of an already-live instance
+preserves the previous owned table — the supervisor never runs <code>nft</code> cleanup on
+an apply failure — and leaves that instance's cgroups untouched, so a transient
+re-arm failure cannot strip live enforcement. Holding the guard is the
+precondition for placing and starting the agent. Dropping the guard tears
+everything down.</p>
+<h2 id="authenticated-production-composition">Authenticated production composition</h2>
+<p>The host derives a schema-v5 <code>RuntimePolicyDocument</code> from the authenticated
+session ID, configured <code>NetworkPolicy</code>, any remote MCP origins, and any package
+registry isolation. Apple and Kata bind that exact document into guest bootstrap
+together with the matching execution broker cgroup parent. The guest rejects
+session, cgroup, gateway-port, reserved-origin, registry, or direct-IP-policy
+drift before starting any service.</p>
+<p>The guest supervisor makes Egress a mandatory service and makes Exec depend on
+it. The egress supervisor:</p>
+<ol>
+<li>validates and consumes its root-owned configuration;</li>
+<li>recovers the original resolver from root-owned state under <code>/run/sendbox</code>;</li>
+<li>starts gateway children that bind the public DNS/SOCKS listeners, the
+optional trusted MCP HTTP listener, and the optional registry-only SOCKS
+listener, but do not serve yet;</li>
+<li>arms delegated cgroups and nftables, then places only the gateways in the
+broker cgroup;</li>
+<li>starts the npm proxy as UID/GID 65532 in the registry cgroup with cleared
+capabilities, no <code>SO_MARK</code>, and a bounded seccomp/resource profile;</li>
+<li>authorizes the gateways and proxy to serve, installs loopback resolver
+configuration, and only then publishes readiness.</li>
+</ol>
+<p>Workloads receive exact upper- and lower-case <code>ALL_PROXY</code>/<code>NO_PROXY</code> and
+<code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code> variables, plus fixed <code>NODE_USE_ENV_PROXY=1</code>.
+The HTTP listener on port 15083 and SOCKS listener on 15080 share the same
+authorization cache, DNS guard, semaphore, and marked dialer. Both ports are
+signed and pairwise distinct from DNS, MCP, and package ports.
+A brokered <a href="../governed-sessions/">governed session</a> adds the signed credential
+relay port 15084, also pairwise distinct, which nftables admits only from the
+agent cgroup to loopback.
+The authenticated stdio MCP broker receives the same fixed proxy environment,
+so local servers remain descendants of execution leaves and cannot bypass
+enforcement. The remote MCP gateway remains in the broker cgroup and uses
+marked exact-address dials rather than the agent-facing CONNECT cache.
+Package-enabled workloads also receive upper- and lower-case npm registry and
+<code>ignore-scripts</code> variables. The public gateway uses a derived policy that denies
+the configured npm upstream; the trusted registry gateway keeps the original
+policy and is reachable only from the registry cgroup.
+Shutdown runs in reverse dependency order: Exec is fully stopped before Egress
+restores resolver state and attempts cgroup-then-nftables teardown. All service
+shutdown failures are aggregated rather than abandoning later cleanup.</p>
+<h3 id="github-meta-delegation-and-refresh">GitHub Meta delegation and refresh</h3>
+<p>An effective exact <code>github.com</code> grant delegates to the fixed official Meta API.
+Compilation stays offline and immutable for configured rules.</p>
+<p><strong>The host owns the only fetch.</strong> Each gateway used to fetch Meta before
+readiness, so every session cost one or two anonymous requests against
+GitHub's limit of 60 per hour per IP address. Many short sessions exhausted it
+and then failed with HTTP 403. Now <code>sendbox-host</code> keeps one machine-wide cache
+in the private runtime state root (<code>~/.sendbox/run/github-meta.json</code>, mode
+<code>0600</code>, guarded by an exclusive <code>flock</code> on <code>github-meta.lock</code>):</p>
+<ul>
+<li>A response validated less than an hour ago is reused without a request, so
+concurrent and back-to-back sessions share it.</li>
+<li>An older response is revalidated with its ETag: a <code>304</code> renews it, a <code>200</code>
+replaces it after full validation, and the cache costs at most one request
+per hour per machine.</li>
+<li>A failed refresh is recorded with its time and typed error. Retries wait 60
+seconds, or until the published reset for a rate limit (403/429 with
+<code>x-ratelimit-remaining: 0</code> or <code>retry-after</code>), capped at one hour.</li>
+<li>During a failure the previous document is reused only while at least 15
+minutes remain before its 24-hour expiry, so it outlives guest boot plus one
+bounded execution. Otherwise the session fails with the typed error,
+including the rate-limit reset time.</li>
+<li>Every cached document is reparsed with the strict validator on read. A
+corrupt or tampered cache is discarded, never granted.</li>
+</ul>
+<p>The host also refuses delegation when a role denies the fixed source: an
+explicit <code>api.github.com</code> deny, disabled DNS, or a TCP/443 exclusion. Role
+address and network controls govern guest traffic, not this host request.</p>
+<p>The validated body, ETag, validation time, and latest attempt and error form a
+<code>GitHubMetaSeed</code>. Its SHA-256 is bound into the signed <code>network_github_meta</code>
+admission (<code>host_seeded_official_https_meta_v2:sha256=...</code>). The seed travels in
+bootstrap schema v5, whose limit grows from 2 MiB to 5 MiB to fit a maximum
+document. The guest supervisor writes it once to a root-owned <code>0400</code> file beside
+the egress configuration. Each gateway reads it, revalidates the full document,
+and installs it <strong>after</strong> its marked identity is armed and <strong>before</strong>
+readiness. Guests never contact GitHub, and no refresh task runs in the guest:
+an execution is capped at 300 seconds, far below the hourly interval.</p>
+<p>The parser explicitly reviews the documented CIDR fields plus the live
+<code>shared_ingress</code> field, the arrays under <code>domains</code>, the full/wildcard inbound
+Actions domains, and artifact-attestation <code>services</code>. SSH/commit keys and
+<code>trust_domain</code> identities never become routes. Unknown fields or any invalid
+destination reject the complete candidate. Limits are 2 MiB, 16,384 network
+entries and 4,096 domain entries before deduplication; default routes are
+rejected. The source is API version <code>2022-11-28</code>, not a caller-supplied URL.</p>
+<p>Each request evaluates one immutable scope view. DNS pins carry its revision;
+every installed seed changes that revision, and an expiry produces a
+scope-less view. New CONNECTs therefore cannot reuse authorizations for removed
+CNAMEs. In-flight resolutions and dials recheck their revision. Explicit
+domain/network denies, restricted-address checks, ports, DNS controls, MCP
+reservations and trusted-registry separation remain authoritative. Published
+networks only add public direct-IP reachability; they never unlock a
+restricted address class or authorize an unlisted hostname.</p>
+<p>A missing or invalid seed is fatal to the gateway. Expiry is 24 hours after the
+host's last successful fetch or conditional revalidation. The gateway converts
+the remaining time into a monotonic deadline at install time, because a freshly
+booted guest cannot backdate an <code>Instant</code>, and checks it on every new view.
+Seeds validated more than five minutes in the guest's future are rejected. The
+status distinguishes pending, fresh, degraded (the host reused last-good after
+a failed revalidation), unavailable and expired. The previous digest/scope
+remains diagnostic after expiry, but has no granting power. Existing tunnels
+retain their original 300-second bound.</p>
+<p>Before activating a seed, production atomically publishes its full status to a
+root-owned <code>0600</code> file under the existing private session directory.
+Publication failure revokes derived scope and is fatal to the gateway.
+<code>AuditSink::record_github_meta</code> is fallible; the normal typed JSON event is also
+emitted. Unlike ordinary captured stderr counts, these files feed the bounded
+authenticated <code>network.report</code> operation and final CLI JSON evidence. The
+report includes the configured policy next to the latest published scope and
+its URL, API version, digest, ETag, revision, timestamps and failure state.
+It is a latest-attempt snapshot, not an append-only audit history.</p>
+<p>The boundary-plan format remains v3. Its <code>network_github_meta</code> feature binds
+the seed digest and the schema-v5 egress document digest, and requires
+authenticated report collection. Matching updated host/guest artifacts are
+necessary: older guests reject the new bootstrap field, and newer guests
+reject a delegation without a seed.</p>
+<h2 id="atomic-apply--update--rollback-and-fail-closed-teardown">Atomic apply / update / rollback and fail-closed teardown</h2>
+<p><code>NftConfig::render_transaction</code> emits <code>destroy table</code> followed by a fresh table
+definition, applied as one <code>nft -f -</code> transaction. <code>nft</code> applies a file
+atomically, so any error aborts the whole update and leaves the <strong>previous</strong>
+table intact — never a partial ruleset. <code>ArmedEgress</code> keeps the last-known-good
+<code>NftConfig</code> in memory:</p>
+<ul>
+<li><code>update(new)</code> validates then applies; on success it becomes the new
+last-known-good, on failure the previous table survives untouched;</li>
+<li><code>rollback()</code> re-applies the last-known-good;</li>
+<li><code>teardown()</code> is <strong>fail-closed ordered</strong> and <strong>retryable</strong>: it removes/verifies
+the owned cgroups <em>first</em>; only once they are gone does it remove the nftables
+table. The cgroup and nftables stages are tracked independently, so if cgroup
+cleanup reports any real error (e.g. a process still occupies a cgroup) the
+nftables table is <strong>retained</strong> so that process cannot regain unrestricted
+egress, the error is surfaced, and a later call retries; likewise, if the
+cgroups are gone but the nftables <code>destroy</code> fails, a later <code>teardown()</code> skips
+the completed cgroup step and retries only the table removal. The top-level
+owned <code>sendbox</code> cgroup directory is removed when empty and tolerated when a
+sibling instance still owns it. It is idempotent and absent-safe.</li>
+</ul>
+<h2 id="data-flow-armed-sandbox">Data flow (armed sandbox)</h2>
+<pre tabindex="0"><code class="language-text">agent ──(loopback)──▶ DNS broker ──validate name/CNAME/addr, budget, cap TTL──▶ resolver
+     ◀── pinned answer ── records (name,ip) authorization ──┐
+                                                            │ shared AuthorizationCache
+agent ──(loopback CONNECT)──▶ CONNECT broker ──pin validated ip, re-check policy──▶
+                                    dial (SO_MARK) ──▶ upstream
+
+agent ──(loopback /mcp/&lt;server-id&gt;)──▶ MCP gateway
+       ──separate marked DNS, classify, reserve aliases/addresses, exact-IP dial──▶
+       configured upstream
+
+agent ──(loopback HTTP)──▶ npm proxy ──verify/scan/cache──▶ trusted SOCKS broker
+                                                      ──(SO_MARK)──▶ npm upstream</code></pre>
+<p>nftables drops any agent packet that is not headed to a loopback broker port,
+the optional MCP gateway port, or the optional npm proxy port, and any broker
+external packet that lacks the mark or targets metadata. It drops every
+registry-cgroup packet except TCP to the trusted registry SOCKS port.</p>
+<h2 id="remote-mcp-reservation-and-bypass-protection">Remote MCP reservation and bypass protection</h2>
+<p>Remote MCP is admitted only through the trusted application-layer gateway.
+Primary and redirect origins are normalized into the signed runtime policy.
+The agent-facing CONNECT broker checks those configured names and observed
+aliases before ordinary domain authorization and denies them first.</p>
+<p>While any remote MCP server is configured:</p>
+<ul>
+<li>authenticated egress is mandatory even if the ordinary network policy would
+otherwise be permissive;</li>
+<li>nftables admits the exact MCP loopback port in addition to DNS and CONNECT;</li>
+<li>all agent-facing direct-IP CONNECT is denied, preventing literal-IP and
+shared-address bypasses;</li>
+<li>gateway DNS uses a separate marked resolver and never grants authorization in
+the agent cache;</li>
+<li>every observed address is classified before reservation or dialing, metadata
+addresses are always rejected, and reservation updates are bounded and
+atomic;</li>
+<li>only the broker cgroup can emit marked upstream packets.</li>
+</ul>
+<p>There is no direct-origin fallback if the gateway, DNS validation, TLS,
+reservation update, audit sink, or egress control fails.</p>
+<h2 id="policy-source-of-truth">Policy source of truth</h2>
+<p><code>sendbox_policy::NetworkPolicy</code> remains authoritative for ordinary workload
+egress. The signed runtime document additionally carries policy-derived remote
+MCP origins, the trusted gateway port, and direct-IP denial. These fields must
+exactly match the signed MCP policy. <code>allow_dns = false</code> binds no agent-facing
+DNS broker and installs no nftables DNS accept rule; the trusted MCP gateway
+still uses its separate marked resolver when remote MCP is configured.</p>
+<p>When package analysis is enabled, <code>sendbox-egress::runtime</code> derives a
+workload-facing policy that removes direct access to every configured npm
+upstream while preserving the original policy for the registry-only gateway.
+The package proxy is therefore mandatory rather than a convention expressed
+only through npm environment variables.</p>
+<p>Compilation and validation fail closed rather than substituting a
+success-shaped default for an invalid value:</p>
+<ul>
+<li><code>max_connections: Option&lt;i64&gt;</code> maps via <code>resolve_max_connections</code> — <code>None</code> to
+the documented default (100), but a non-positive value or one above the
+supported ceiling (<code>MAX_CONNECTIONS_CEILING</code>, or <code>u32</code>) is a deterministic
+<code>PolicyError</code>, never silently clamped or defaulted.</li>
+<li>Every DNS structural limit and per-window budget is range-checked at both
+<code>sendbox_policy::PolicyConfiguration::validate</code> and <code>PolicyEngine::compile</code>:
+<code>max_qname_octets</code> ∈ 1..=253, <code>max_label_octets</code> ∈ 1..=63, positive
+<code>max_labels</code>/<code>max_response_records</code>/all budget counters, a positive
+<code>max_ttl_secs</code>/<code>window_secs</code>, and a non-empty QTYPE allowlist. Any zero or
+out-of-range field is a deterministic error.</li>
+</ul>
+<h2 id="testing-and-qualification">Testing and qualification</h2>
+<ul>
+<li>Portable unit tests live beside each module; portable integration tests are in
+<code>tests/gateway_integration.rs</code>. Both run on macOS and Linux. Deterministic
+nftables tests also prove that the workload can reach the npm proxy but not
+the trusted registry SOCKS listener, that the registry cgroup can reach only
+that trusted listener, and that no registry rule accepts <code>SO_MARK</code>.</li>
+<li>The privileged live proof is <code>tests/live_netns.rs</code>, gated by
+<code>target_os = &quot;linux&quot;</code>, <code>SENDBOX_EGRESS_LIVE=1</code>, and a full <code>Preflight</code> (plus
+<code>setpriv</code>). It proves cgroup identity isolation, the mark requirement, a
+nested execution leaf that can reach the loopback broker but cannot connect
+directly externally, sibling/identity-spoof denial, direct-egress bypass
+denial, non-vacuous
+IPv6/UDP denial with reachable positive controls, an <strong>unprivileged agent</strong>
+(dropped via <code>setpriv</code> with all capabilities cleared and <code>no_new_privs</code>, whose
+raw-socket creation is denied), <strong>marked upstream DNS with a UDP-truncation →
+TCP fallback</strong> through a real <code>ForwardingResolver</code>, a <strong>real kernel
+apply-time-failure rollback</strong> (an update ruleset references a candidate cgroup
+that passes <code>--check</code>, is deleted immediately before the genuine <code>nft -f -</code>
+commit so the real transaction fails to resolve it, and the previous table is
+shown to survive before an explicit disrupt/rollback restores enforcement),
+and broker restart. Teardown surfaces errors, which the test asserts are
+empty, then verifies every namespace/veth/table/cgroup resource is absent
+after normal, repeated, and injected-panic cleanup. On a host that cannot
+enforce it fails loudly when <code>SENDBOX_EGRESS_LIVE_REQUIRE=1</code> (the CI job),
+never a silent skip.</li>
+<li>The harness itself reads its policy/fixture config with <code>O_NOFOLLOW</code> (or an
+inherited descriptor) <strong>before</strong> any cgroup/namespace transition, so a symlink
+swap or predictable-path reopen after a transition cannot influence it. The
+live harness's config files are exclusive, unpredictable, mode-0600 temporary
+files (via <code>tempfile</code>, <code>O_EXCL</code>), retained for the run and cleaned up — with
+absence assertions — in teardown, never predictable <code>/tmp/&lt;name&gt;-&lt;pid&gt;</code> paths.</li>
+<li>The macOS development host cannot run the privileged suite; CI runs it on a
+privileged Ubuntu x86_64 runner.</li>
+</ul>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/egress-enforcement.md"><code>docs/architecture/egress-enforcement.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/egress-enforcement.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../session-security-lifecycle/"><span class="pager-label">Previous</span> Session security lifecycle</a>
+<a class="pager-next" href="../mcp-broker/"><span class="pager-label">Next</span> MCP broker</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="./" aria-current="page">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

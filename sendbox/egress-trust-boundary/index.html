@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Egress trust boundary | SendBox docs</title>
+  <meta name="description" content="The egress enforcement trust boundary and runtime integration contract.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Egress trust boundary | SendBox docs">
+  <meta property="og:description" content="The egress enforcement trust boundary and runtime integration contract.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/egress-trust-boundary/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/egress-trust-boundary/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Egress trust boundary</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Security</p>
+<h1 id="egress-enforcement-trust-boundary-and-runtime-integration-contract">Egress enforcement trust boundary and runtime integration contract</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#trust-boundary">Trust boundary</a></li>
+<li><a href="#what-the-kernel-layer-enforces">What the kernel layer enforces</a></li>
+<li><a href="#what-the-userspace-brokers-enforce">What the userspace brokers enforce</a></li>
+<li><a href="#threat-model-and-mitigations">Threat model and mitigations</a></li>
+<li><a href="#residual-risks-explicitly-not-closed">Residual risks (explicitly not closed)</a></li>
+<li><a href="#runtime-integration-contract">Runtime integration contract</a></li>
+</ol>
+</nav>
+<p>Status: <strong>production runtime integration</strong>. Companion to
+<a href="../architecture/egress-enforcement/"><code>docs/architecture/egress-enforcement.md</code></a>.
+This document defines the trust boundary of <code>sendbox-egress</code>, its threat model,
+the residual risks it does <em>not</em> close, and the contract a runtime supervisor
+must satisfy to integrate it.</p>
+<h2 id="trust-boundary">Trust boundary</h2>
+<pre tabindex="0"><code class="language-text">untrusted workload (agent cgroup)
+  |-- loopback DNS/public SOCKS --&gt; trusted gateways (broker cgroup + SO_MARK)
+  `-- loopback npm HTTP ---------&gt; trusted package proxy (registry cgroup)
+                                      `-- registry-only loopback SOCKS
+                                          --&gt; trusted gateway (broker + SO_MARK)
+
+nftables default-drop denies every other cgroup/destination combination</code></pre>
+<ul>
+<li><strong>Untrusted:</strong> every workload process beneath the delegated agent ancestor. It
+runs in nested execution leaves and may reach <em>only</em> the loopback DNS and
+public CONNECT broker ports plus the workload-facing npm proxy when enabled.</li>
+<li><strong>Trusted broker:</strong> DNS/SOCKS gateways in the broker cgroup mark their
+external sockets and enforce <code>PolicyEngine</code> in userspace.</li>
+<li><strong>Trusted registry proxy:</strong> the package analyzer runs as a separate
+unprivileged identity in the registry cgroup. It can reach only its
+registry-only loopback SOCKS listener and cannot set <code>SO_MARK</code>.</li>
+<li><strong>Trusted supervisor:</strong> arms enforcement and places every service in its
+expected cgroup. nftables enforces identity and reachability in the kernel as
+defense in depth.</li>
+<li>The boundary is a Linux network namespace with the crate-owned nftables table.
+The crate never modifies anything outside its owned table, cgroup subtree, and
+namespace.</li>
+</ul>
+<h2 id="what-the-kernel-layer-enforces">What the kernel layer enforces</h2>
+<ul>
+<li>The agent cgroup can originate traffic <strong>only</strong> to the exact loopback broker
+ports (CONNECT always; DNS only when <code>allow_dns = true</code>), the configured
+npm proxy port, and, in a governed session with brokered credentials, the
+credential relay port (15084). The relay is served by the trusted guest
+supervisor and forwards to the host over the authenticated control channel,
+not through the broker cgroup.</li>
+<li>The registry cgroup can originate traffic <strong>only</strong> to the exact
+registry-only SOCKS port. It cannot reach public broker ports or external
+destinations.</li>
+<li>The broker cgroup can originate external traffic <strong>only</strong> when the socket
+carries the fixed <code>SO_MARK</code>, and never to cloud-metadata addresses.</li>
+<li>Any other process (a sibling in none of the owned cgroups) is denied the broker
+ports and external egress. This is the concrete improvement over UID-based
+isolation: sharing a UID no longer grants broker-class reachability.</li>
+<li>New inbound to the broker's own loopback ports is scoped by <code>iif lo</code> + exact
+destination + port. The originating identity is not visible at the input hook,
+but the <strong>output</strong> chain already permits only the intended source-cgroup and
+destination-port pair.</li>
+<li>All UDP/QUIC from the agent (other than DNS to the broker) is dropped; the
+CONNECT broker additionally answers <code>UnsupportedProtocol</code> (native protocol) or
+<code>Command not supported</code> (SOCKS5 <code>BIND</code>/<code>UDP ASSOCIATE</code>) for any non-TCP
+request. Raw <code>AF_PACKET</code> sockets operate below the IP layer and are <strong>not</strong>
+visible to the <code>inet</code> filter hooks — dropping <code>CAP_NET_RAW</code> from the agent is
+the runtime's responsibility (see contract below).</li>
+</ul>
+<h2 id="what-the-userspace-brokers-enforce">What the userspace brokers enforce</h2>
+<ul>
+<li>A selectable client-facing front end (<code>ConnectFrontend</code>): the crate's native
+bounded CONNECT framing (default) or standard SOCKS5 (RFC 1928, no-auth,
+<code>CONNECT</code> only). The front end is fixed per instance from configuration, never
+auto-detected from client bytes. Both front ends enforce policy through the
+identical resolve/pin/decide/dial path; only the wire framing differs.</li>
+<li>Domain allow/deny with blocked-domain precedence and wildcard rules that never
+match an apex or an unrelated suffix.</li>
+<li>An address-class check no domain grant can override; a restricted class
+(loopback, link-local, RFC 1918, ULA, multicast, metadata, unspecified) needs
+an explicit IP/CIDR grant.</li>
+<li>IPv4-mapped-IPv6 canonicalization so a blocked/allowed CIDR cannot be bypassed
+or missed through address encoding.</li>
+<li>DNS validation of every CNAME hop and returned address, TTL capping, and an
+expiring <code>(name, ip)</code> authorization that pins the exact validated address —
+a later CONNECT can only use an address a DNS answer actually validated,
+defeating rebinding.</li>
+<li>Deterministic DNS query-name exfiltration budgets: total QNAME/label limits, a
+QTYPE allowlist, a response-record cap, and per-window query-count, query-octet,
+distinct-name, and distinct-dynamic-label budgets with bounded state. Every
+structural/budget field is range-validated (fail closed) at compile time.</li>
+<li>An exact <code>github.com</code> grant delegates to validated, expiring public
+destinations from the fixed official HTTPS Meta API. Every broker uses the
+same snapshot revision; refresh/expiry retires DNS pins and rechecks
+in-flight resolution/dial decisions. Meta CIDRs cannot unlock private,
+link-local, metadata or other restricted classes.</li>
+</ul>
+<p>The trusted gateway retrieves Meta through its marked dialer, without
+credentials, redirects or environment proxies, and verifies TLS for
+<code>api.github.com</code>. It publishes provenance before activating a candidate.
+Initial fetch or provenance-publication failure prevents readiness; refresh
+outages retain only a bounded last-good lease. See
+<a href="../configuration/#network-grants">refresh and evidence</a> for exact limits.</p>
+<h2 id="threat-model-and-mitigations">Threat model and mitigations</h2>
+<div class="table-scroll" role="group" aria-label="Threat model and mitigations table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Threat</th><th scope="col">Mitigation</th></tr></thead>
+<tbody>
+<tr><td>Direct outbound bypassing the broker</td><td>Kernel default-drop; the agent ancestor match confines every nested execution leaf to public loopback broker ports and the optional npm proxy.</td></tr>
+<tr><td>Workload bypasses package analysis with an npm registry override or direct tarball URL</td><td>The workload policy denies the configured npm upstream and the agent cgroup cannot reach the registry-only SOCKS listener.</td></tr>
+<tr><td>Compromised package proxy dials externally or reaches the public broker</td><td>The registry cgroup can reach only the trusted registry SOCKS port and has no <code>SO_MARK</code> capability.</td></tr>
+<tr><td>Sharing the broker's identity to egress</td><td>cgroup v2 identity + required <code>SO_MARK</code>; a sibling process is denied.</td></tr>
+<tr><td>DNS rebinding</td><td>Expiring <code>(name, ip)</code> authorization pins the exact validated address.</td></tr>
+<tr><td>SSRF to cloud metadata</td><td>Address-class denial in policy <strong>and</strong> an explicit kernel drop for the broker.</td></tr>
+<tr><td>DNS-tunneling exfiltration</td><td>Deterministic, bounded structural limits and per-window budgets.</td></tr>
+<tr><td>Broker crash leaving traffic open</td><td>Rules persist on broker death (fail closed); the guard re-arms on restart.</td></tr>
+<tr><td>Partial/failed ruleset update</td><td>Atomic <code>destroy + create</code> transaction; a failed update leaves the previous table intact. A failed <strong>re-arm</strong> never runs <code>nft</code> cleanup, so a live instance's table is preserved rather than destroyed.</td></tr>
+<tr><td>Lingering process during teardown</td><td>Fail-closed teardown removes cgroups first; if a cgroup still holds a process, the nftables table is <strong>retained</strong> (the process cannot regain egress) and the error is surfaced. Teardown is retryable: cgroup and nftables removal are tracked independently, so a later call retries whichever stage failed.</td></tr>
+<tr><td>Off-path DNS response spoofing</td><td>The forwarding resolver connects its UDP socket to the exact upstream, so the kernel drops any reply whose source is not the full upstream <code>SocketAddr</code> (address <strong>and</strong> port), not merely the same IP.</td></tr>
+<tr><td>Symlink race on cgroup paths</td><td>All cgroup filesystem operations are descriptor-relative via <code>cap-std</code> (<code>RESOLVE_BENEATH</code>); an escaping symlink under the root is refused.</td></tr>
+<tr><td>Raw-socket egress bypass</td><td>The agent runs unprivileged with <code>CAP_NET_RAW</code> dropped; the live suite asserts every capability set is empty and that raw-socket creation is denied.</td></tr>
+<tr><td>Unbounded DNS-only cache growth</td><td>The authorization cache prunes expired entries on insert and enforces a deterministic hard capacity derived from the DNS budget.</td></tr>
+<tr><td>CONNECT resolution bypassing DNS controls</td><td>A fresh CONNECT-path resolution applies the same <code>DnsGuard</code> (structural limits, QTYPE allowlist, response cap, budget); with <code>allow_dns = false</code> it does not resolve at all.</td></tr>
+<tr><td>Slowloris / floods</td><td>Bounded handshakes, per-message caps, bounded concurrency, inline (never spawned) rejections.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="residual-risks-explicitly-not-closed">Residual risks (explicitly not closed)</h2>
+<ul>
+<li><strong>Shared-cloud delegation.</strong> The requested Meta scope includes Actions
+CIDRs and wildcard cloud/storage services that can host unrelated tenants.
+A direct-IP grant is network reachability, not GitHub ownership,
+authentication or operation approval. Existing deny/private/MCP/package
+boundaries remain necessary. The feed is authenticated by HTTPS, not a
+separately signed GitHub artifact.</li>
+<li><strong>Snapshot transitions.</strong> Removing a grant affects new connections; existing
+tunnels are bounded to 300 seconds, not forcibly revoked. Exported evidence
+contains the latest refresh attempt and expiry, not every transition.</li>
+<li><strong>Metadata by hostname over an uncovered address.</strong> The metadata address list
+(<code>address::METADATA_V4_ADDRESSES</code> / <code>METADATA_V6_ADDRESSES</code>) is deterministic
+but not exhaustive. A provider that serves metadata purely by a hostname
+resolving to an address not on the list must be blocked with <code>blocked_domains</code>.</li>
+<li><strong>Query-name exfiltration within budget.</strong> The budgets bound exfiltration
+bandwidth deterministically; they do not make a broad <code>allowed_domains</code> policy
+safe. A narrow allowlist remains the primary control.</li>
+<li><strong>Raw sockets.</strong> <code>AF_PACKET</code> is below the IP filter hooks; the runtime must
+drop <code>CAP_NET_RAW</code> (and generally run the agent unprivileged). The live suite
+proves this by running the agent under <code>setpriv</code> with all capability sets
+cleared and <code>no_new_privs</code>, then asserting raw-socket creation is denied — but
+the <em>production</em> runtime is still responsible for the equivalent privilege
+drop.</li>
+<li><strong>Loopback upstream resolvers.</strong> The forwarding resolver's upstream must be
+external (reached via the marked broker path), not a loopback service inside
+the sandbox namespace, which the input chain does not admit.</li>
+<li><strong>Capability/privilege of the agent.</strong> cgroup identity does not drop
+capabilities; privilege drop is the runtime supervisor's job.</li>
+<li><strong>Inherited configuration descriptors.</strong> The harness accepts a pre-opened
+<code>--policy-fd</code> / <code>--fixtures-fd</code> and otherwise reads with <code>O_NOFOLLOW</code> before
+any namespace/cgroup transition. Stable Rust's <code>std::process::Command</code> cannot
+pass an arbitrary inherited fd to a child across a <code>setpriv</code>/<code>ip netns exec</code>
+re-exec, so the live path reads config in-process before transitions rather
+than reopening a predictable path afterward.</li>
+</ul>
+<h2 id="runtime-integration-contract">Runtime integration contract</h2>
+<p>A runtime supervisor integrating this crate must:</p>
+<ol>
+<li>Create the sandbox network namespace and any veth/routing before arming.</li>
+<li>Call <code>ArmedEgress::arm</code> (or <code>arm_under</code> with a namespace-scoped <code>NftRunner</code>).
+It refuses to arm unless enforcement is fully installed and verified.</li>
+<li>Retain <code>CAP_NET_ADMIN</code> in the namespace for the broker (to set <code>SO_MARK</code> and
+load nftables); preflight probes this.</li>
+<li>Start every DNS/SOCKS <strong>gateway</strong> in the broker cgroup, configured with the
+<code>MarkDialer</code> and a <code>ForwardingResolver</code> carrying the same mark. Pick the
+CONNECT front end (<code>ConnectFrontend::Custom</code> or <code>Socks5</code>) to match the
+client; the choice is fixed configuration, never negotiated from bytes.</li>
+<li>If package analysis is enabled, start the proxy in the registry cgroup with
+a distinct UID/GID, cleared capabilities, <code>no_new_privs</code>, and no socket-mark
+privilege. Expose its trusted SOCKS listener only to that cgroup.</li>
+<li>For production execution, arm with controller delegation, keep the agent
+ancestor empty, and start workloads only in descendant execution leaves.
+Direct <code>place_agent</code> is deliberately rejected in delegated mode.</li>
+<li>Run the agent unprivileged with <code>CAP_NET_RAW</code> dropped (raw sockets are out of
+the <code>inet</code> hooks' scope) and <code>no_new_privs</code> set.</li>
+<li>Keep the broker and registry cgroups stable across service restarts —
+re-place new pids rather than recreating cgroups, so loaded nftables cgroup
+identities stay valid.</li>
+<li>On shutdown, stop the agent and registry proxy, then drop/<code>teardown</code> the
+guard. Teardown is fail-closed ordered (cgroups before nftables), idempotent,
+and absent-safe;
+a surfaced error means enforcement was deliberately retained and must be
+logged and retried, not ignored.</li>
+</ol>
+<p>The crate remains provider-neutral. Production integration lives in
+<code>sendbox-host</code>, authenticated bootstrap, the Apple/Kata providers, and the guest
+Egress service. Hyperlight rejects restrictive egress policy because it does
+not implement this persistent guest boundary.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/security/egress-enforcement-trust-boundary.md"><code>docs/security/egress-enforcement-trust-boundary.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/security/egress-enforcement-trust-boundary.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../security-policy/"><span class="pager-label">Previous</span> Reporting vulnerabilities</a>
+<a class="pager-next" href="../secrets-migration/"><span class="pager-label">Next</span> Secrets migration</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="./" aria-current="page">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

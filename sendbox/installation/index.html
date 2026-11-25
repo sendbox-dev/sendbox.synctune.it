@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Installation | SendBox docs</title>
+  <meta name="description" content="Host and runtime requirements, workload images, release verification, source builds and macOS package notes.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Installation | SendBox docs">
+  <meta property="og:description" content="Host and runtime requirements, workload images, release verification, source builds and macOS package notes.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/installation/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/installation/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Installation</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Get started</p>
+<h1 id="installation">Installation</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#requirements">Requirements</a></li>
+<li><a href="#homebrew">Homebrew</a></li>
+<li><a href="#release-artifacts">Release artifacts</a></li>
+<li><a href="#publishing-a-release">Publishing a release</a></li>
+<li><a href="#build-from-source">Build from source</a></li>
+<li><a href="#unsigned-macos-packages">Unsigned macOS packages</a></li>
+</ol>
+</nav>
+<p>Install SendBox through Homebrew or a verified release artifact, or build the
+host binary from source when developing the project.</p>
+<h2 id="requirements">Requirements</h2>
+<p>Choose a runtime before installing. Apple and Kata support interactive and
+headless agent sessions; Hyperlight is an explicit one-shot provider with a
+narrower capability set.</p>
+<div class="table-scroll" role="group" aria-label="Requirements table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Scope</th><th scope="col">Dependency</th><th scope="col">Required version or setup</th></tr></thead>
+<tbody>
+<tr><td>Source build</td><td>Rust</td><td>1.93.1 (pinned by <code>rust-toolchain.toml</code>)</td></tr>
+<tr><td>Linux source build</td><td>Native compiler and headers</td><td><code>build-essential clang cmake libelf-dev libseccomp-dev libzstd-dev pkg-config zlib1g-dev</code> on Debian/Ubuntu</td></tr>
+<tr><td>Apple runtime</td><td>macOS</td><td>26 (Tahoe) or newer</td></tr>
+<tr><td>Apple runtime</td><td>Hardware</td><td>Apple silicon</td></tr>
+<tr><td>Apple runtime</td><td>Xcode</td><td>26</td></tr>
+<tr><td>Apple runtime</td><td>Official <code>container</code> CLI and API server</td><td>Exact matching 0.10.0 or 1.7.1 pair; service already registered and running; see <a href="../apple-runtime/#requirements">source/release qualification status</a></td></tr>
+<tr><td>Kata runtime</td><td>Linux</td><td>Bare metal or nested virtualization</td></tr>
+<tr><td>Kata runtime</td><td>Kata Containers</td><td>3.28 or newer</td></tr>
+<tr><td>Kata runtime</td><td>containerd</td><td>1.7 or newer</td></tr>
+<tr><td>Kata runtime</td><td>nerdctl and CNI plugins</td><td>Compatible releases; access to KVM and the containerd socket</td></tr>
+<tr><td>Linux host binary</td><td>libseccomp, libelf, zlib, and zstd runtime libraries</td><td>Distribution packages such as <code>libseccomp2</code>, <code>libelf1</code>, <code>zlib1g</code>, and <code>libzstd1</code></td></tr>
+<tr><td>Hyperlight runtime</td><td>Operator-pinned <code>hyperlight-unikraft</code>, signed Unikraft bundle, and KVM</td><td>See <a href="../hyperlight/">Hyperlight</a></td></tr>
+</tbody>
+</table>
+</div>
+<p>The <a href="../apple-runtime/">Apple</a> and <a href="../kata-containers/">Kata</a> guides cover runtime
+setup and preflight. Run SendBox as your normal user, not with <code>sudo</code> to work
+around runtime access problems.</p>
+<h3 id="workload-image-versus-guest-bundle">Workload image versus guest bundle</h3>
+<p>Persistent agent sessions need both:</p>
+<ul>
+<li>A <strong>digest-pinned Linux workload image</strong> for the guest architecture, containing
+your agent, its runtime dependencies, certificates, shell, and development
+tools.</li>
+<li>A <strong>verified signed guest bundle and trust root</strong>, containing SendBox's
+security services. These do not install the agent or its development tools.</li>
+</ul>
+<p>Apple and Kata workload images must also provide the <code>nft</code> executable and its
+shared-library dependencies. Mandatory egress enforcement requires a writable
+cgroup v2 root, delegated memory/PID controllers, <code>CAP_NET_ADMIN</code>, <code>SO_MARK</code>, and
+kernel support for nftables <code>socket cgroupv2</code>. A plain Alpine image without
+<code>nftables</code> is not sufficient, even when the network policy denies all traffic.
+Missing enforcement prerequisites are errors, not grounds to skip hardening.</p>
+<p>The execution broker resolves entrypoint and working-directory paths without
+following symlinks. Use a regular executable path and match that exact argv in
+the command policy. Alpine's default <code>/bin/sh</code> is a BusyBox symlink; a workload
+image using that entrypoint must materialize a regular shell executable or
+select another regular entrypoint with the corresponding policy. Do not disable
+descriptor-resolution checks to accommodate an image.</p>
+<p>The production guest image is intentionally minimal: it contains no Python,
+Node.js, compiler, bpftrace, or development headers. Keep bundle executables,
+metadata, and trust roots in the root-owned locations described below. A public
+key shipped beside a bundle is not self-authenticating; verify release
+provenance before trusting it.</p>
+<h2 id="homebrew">Homebrew</h2>
+<p>The existing <a href="https://github.com/mbianchidev/homebrew-tap">mbianchidev/tap</a>
+uses a <strong>formula</strong>, not a GUI cask.</p>
+<p>Before installing, check the <a href="#dependency-security-status">dependency security status</a>.
+The <strong>v0.2.3 TLS-fix floor is necessary but no longer sufficient</strong>.
+Published v0.2.2 and earlier binaries predate
+<a href="https://rustsec.org/advisories/RUSTSEC-2026-0382">RUSTSEC-2026-0382</a> and
+<a href="https://rustsec.org/advisories/RUSTSEC-2026-0383">RUSTSEC-2026-0383</a>.
+Published binaries cannot inherit source fixes. The planned central updater
+keeps this patched-release floor and verifies the artifacts before updating
+the formula. <strong>Central automation is pending review and activation in the
+tap</strong>; see <a href="#stable-homebrew-updates">stable Homebrew updates</a>. This source
+change does not publish a replacement release or activate that automation.</p>
+<h3 id="dependency-security-status">Dependency security status</h3>
+<p>The November 11, 2026 CI audit identified additional advisories in the unchanged
+v0.2.5 source/release lockfile. Source now requires at least
+<code>cap-std</code>/<code>cap-primitives</code> 4.0.3, <code>hickory-proto</code> 0.26.2, and <code>rustix</code> 1.1.6;
+the lockfiles resolve <code>hickory-proto</code> 0.26.3:</p>
+<ul>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0482">RUSTSEC-2026-0482</a>:
+capability filesystem sandbox escape, fixed by <code>cap-primitives</code> 4.0.3.</li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0491">RUSTSEC-2026-0491</a>,
+<a href="https://rustsec.org/advisories/RUSTSEC-2026-0487">0487</a>,
+<a href="https://rustsec.org/advisories/RUSTSEC-2026-0488">0488</a>,
+<a href="https://rustsec.org/advisories/RUSTSEC-2026-0490">0490</a>, and
+<a href="https://rustsec.org/advisories/RUSTSEC-2026-0489">0489</a>:
+DNS allocation/panic defects fixed by <code>hickory-proto</code> 0.26.2.</li>
+<li><a href="https://rustsec.org/advisories/RUSTSEC-2026-0486">RUSTSEC-2026-0486</a>:
+an extended-attribute buffer unsoundness warning fixed by <code>rustix</code> 1.1.6.</li>
+</ul>
+<p>These are source fixes, not newly published artifacts. Rebuild and independently
+review both the host and signed guest bundle in a new release; an installed
+v0.2.5 binary or guest bundle does not inherit dependency updates or Apple 1.7.1
+compatibility. Do not treat an older release as patched merely because it
+passes signature/digest verification or the historical TLS version floor.</p>
+<h3 id="formula-installation">Formula installation</h3>
+<p>Install with:</p>
+<pre tabindex="0"><code class="language-bash">brew install mbianchidev/tap/sendbox
+sendbox --version
+sendbox --help</code></pre>
+<p>It reuses verified published host archives for macOS arm64, Linux x86_64, and
+Linux aarch64. There is no frontend build, background service, or automatic
+runtime installation. Intel Macs are not supported. The Apple runtime still
+requires macOS 26+, Apple silicon, and the pinned <code>container</code> CLI; Linux needs
+the Kata/KVM runtime described above.</p>
+<p>The binary is linked into Homebrew's <code>bin</code>; the complete release payload,
+including <code>setup.sh</code>, configuration examples, and signed guest assets, lives
+under <code>$(brew --prefix mbianchidev/tap/sendbox)/libexec</code>.</p>
+<h3 id="stage-the-guest-bundle">Stage the guest bundle</h3>
+<p>Homebrew's Cellar is user-owned. <strong>Do not pass the Cellar's guest bundle or
+public key directly to <code>sendbox run</code></strong>, change Cellar ownership, or run Homebrew
+with <code>sudo</code>. SendBox deliberately requires root-owned runtime artifacts and
+trusted ancestors. A formula install does not weaken that requirement.</p>
+<p>Before trusting the embedded guest key, independently verify the original
+archive's provenance:</p>
+<pre tabindex="0"><code class="language-bash">brew fetch --formula mbianchidev/tap/sendbox
+gh attestation verify &quot;$(brew --cache --formula mbianchidev/tap/sendbox)&quot; \
+  --repo mbianchidev/sendbox \
+  --signer-workflow mbianchidev/sendbox/.github/workflows/release.yaml</code></pre>
+<p>Copy the matching payload to a <strong>new, versioned, root-owned location</strong>. The
+following commands are an explicit administrator step, not a formula hook.
+Stop if the destination already exists and inspect it instead of overwriting
+an existing runtime installation:</p>
+<pre tabindex="0"><code class="language-bash">prefix=&quot;$(brew --prefix mbianchidev/tap/sendbox)&quot;
+version=&quot;$(sendbox --version | awk '{print $2}')&quot;
+case &quot;$(uname -m)&quot; in
+  arm64|aarch64) architecture=aarch64 ;;
+  x86_64) architecture=x86_64 ;;
+  *) printf 'Unsupported architecture\n' &gt;&amp;2; exit 1 ;;
+esac
+GUEST_DIR=&quot;/opt/sendbox/$version/guest/$architecture&quot;
+test ! -e &quot;/opt/sendbox/$version&quot; || {
+  printf 'Guest destination already exists; inspect it before continuing\n' &gt;&amp;2
+  exit 1
+}
+sudo install -d -o 0 -g 0 -m 0755 /opt/sendbox &quot;$GUEST_DIR&quot;
+sudo cp -R &quot;$prefix/libexec/guest/$architecture/bundle&quot; \
+  &quot;$prefix/libexec/guest/$architecture/release-public.key&quot; &quot;$GUEST_DIR/&quot;
+sudo chown -R 0:0 &quot;/opt/sendbox/$version&quot;
+sudo find &quot;/opt/sendbox/$version&quot; -type d -exec chmod 0755 {} +
+sudo find &quot;/opt/sendbox/$version&quot; -type f -exec chmod 0444 {} +
+sudo find &quot;$GUEST_DIR/bundle/bin&quot; -type f -exec chmod 0555 {} +</code></pre>
+<p>Ensure <code>/opt</code> and <code>/opt/sendbox</code> are real root-owned directories, not symlinks,
+and are not group/world writable. Launch the CLI as your <strong>normal user</strong>, with
+<code>--bundle &quot;$GUEST_DIR/bundle&quot;</code> and
+<code>--trust-root &quot;$GUEST_DIR/release-public.key&quot;</code>. Configure the runtime separately
+using the <a href="../apple-runtime/">Apple</a> or <a href="../kata-containers/">Kata</a> guide.</p>
+<h3 id="upgrade-and-removal">Upgrade and removal</h3>
+<pre tabindex="0"><code class="language-bash">brew update
+brew upgrade mbianchidev/tap/sendbox
+brew uninstall mbianchidev/tap/sendbox</code></pre>
+<p>After upgrading, verify and stage the new version's guest bundle before using
+it with the new CLI. Keep old root-owned bundles until no sessions need them;
+they are outside the Cellar and are not removed by Homebrew.</p>
+<p>Upgrades and removal preserve project <code>.sendbox.yaml</code> files, workspace contents,
+user state under <code>~/.sendbox</code>, and macOS Keychain credentials. No uninstall or
+cleanup hook deletes these locations. Remove retained state and versioned
+<code>/opt/sendbox</code> payloads separately only when you intentionally want to erase
+them. Do not mix a manual <code>/usr/local/bin/sendbox</code> install with Homebrew or use
+<code>brew link --overwrite</code>; inspect and migrate the old installation explicitly.</p>
+<h2 id="release-artifacts">Release artifacts</h2>
+<p>Download the matching artifact from
+<a href="https://github.com/sendbox-dev/sendbox/releases">Releases</a>:</p>
+<div class="table-scroll" role="group" aria-label="Release artifacts table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Host</th><th scope="col">Artifacts</th></tr></thead>
+<tbody>
+<tr><td>macOS arm64</td><td>tarball, unsigned <code>.pkg</code>, unsigned <code>.dmg</code></td></tr>
+<tr><td>Linux x86_64</td><td>tarball</td></tr>
+<tr><td>Linux aarch64</td><td>tarball</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each host archive and macOS installer contains the production <code>sendbox</code> binary,
+configuration examples, setup helper, and matching signed guest bundle. The
+release also publishes standalone guest-bundle archives.</p>
+<p>Verify GitHub provenance before trusting the embedded guest public key, then
+verify the adjacent checksum:</p>
+<pre tabindex="0"><code class="language-bash">gh attestation verify sendbox-&lt;version&gt;-&lt;platform&gt;.tar.gz \
+  -R mbianchidev/sendbox
+shasum -a 256 -c sendbox-&lt;version&gt;-&lt;platform&gt;.tar.gz.sha256</code></pre>
+<p>Install a verified tarball into a root-owned runtime location:</p>
+<pre tabindex="0"><code class="language-bash">sudo tar xzf sendbox-&lt;version&gt;-&lt;platform&gt;.tar.gz -C /opt
+sudo install -m 0755 /opt/sendbox-&lt;version&gt;-&lt;platform&gt;/sendbox \
+  /usr/local/bin/sendbox</code></pre>
+<p>Or install the verified macOS package:</p>
+<pre tabindex="0"><code class="language-bash">sudo installer -pkg sendbox-&lt;version&gt;-macos-arm64.pkg -target /</code></pre>
+<p>Run <code>/opt/sendbox-&lt;version&gt;-&lt;platform&gt;/setup.sh</code> as your normal user after
+installing a tarball. The root-owned extraction preserves the runtime trust
+boundary for the bundled guest artifacts; do not copy them into a user-writable
+directory before launch.</p>
+<p>Production guest bundles provide static-musl guest and execution binaries,
+strict CO-RE BPF objects, signed manifests, inventory, SBOM metadata,
+deterministic rootfs tarballs, and minimal scratch OCI images for Linux x86_64
+and arm64. See <a href="../architecture/guest-artifact-bundles/">guest artifact bundles</a>
+for details.</p>
+<h2 id="publishing-a-release">Publishing a release</h2>
+<p>Releases are triggered by pushing a <code>vX.Y.Z</code> tag, not by <code>make release</code>, which
+only builds locally. From a clean checkout with <code>origin</code> pointing to
+<code>mbianchidev/sendbox</code>, run:</p>
+<pre tabindex="0"><code class="language-bash">./scripts/release.sh 0.2.0</code></pre>
+<p>The script requires Bash, Git, Python 3.11 or newer, and an authenticated GitHub
+CLI account with permission to push branches and tags, merge PRs, and rerun
+Actions workflows. Cargo is also required when preparing a new version bump.
+For a new release, pass a stable <code>X.Y.Z</code> version greater than the version on
+<code>main</code>; a leading <code>v</code> is also accepted.</p>
+<p>Git and GitHub CLI pagers are disabled for the script and its subprocesses, so
+output never pauses for pager input and the script exits on its own after
+printing the release URL.</p>
+<p>After its preflight safety checks, the script switches the invoking checkout
+to <code>main</code> and pulls <code>origin/main</code> with <code>--ff-only</code> before inspecting or resuming
+a release. A failed pull or divergent local <code>main</code> stops the script before any
+release operations. If <code>main</code> is checked out in another Git worktree, run from
+that checkout instead; the script never forces a second checkout of <code>main</code>.</p>
+<p>For a new release, it creates an isolated worktree from updated <code>origin/main</code>,
+updates <code>[workspace.package].version</code> and the CLI version assertion, and
+refreshes every committed Cargo lockfile, including standalone fuzz, spike,
+and qualification workspaces. Unrelated dependencies are not upgraded.</p>
+<p>It then opens a version-bump PR, waits for CI checks to pass, and merges without
+bypassing branch protections. An annotated tag is pushed at the PR's merged
+<code>main</code> commit, after verifying that its Cargo version matches the tag. The
+invoking checkout stays on <code>main</code> at its startup pull, while the original
+feature branch is unchanged and version edits remain in the isolated worktree.</p>
+<p>The script watches the <a href="https://github.com/sendbox-dev/sendbox/actions/workflows/release.yaml">Release workflow</a>,
+which publishes GitHub assets and GHCR artifacts, including macOS installers,
+Linux archives, and signed guest bundles. The required release-signing secret
+is already configured; no local signing key is needed.</p>
+<p>Native macOS arm64 and Linux x86_64/aarch64 CLI tests and builds run in parallel
+with the signed guest builds. Each packaging job waits for both producers and
+verifies the checksum and executable mode of its matching, commit-specific CLI
+archive before combining those exact tested bytes with the signed guest payload.
+The internal CLI archives retain the default Actions artifact lifetime and are
+excluded from published assets. Signing, clean guest builds, package checksums,
+release provenance, and GHCR publication are unchanged. Homebrew verification
+and formula updates are owned by the tap, as described below.</p>
+<p>Generic build and packaging hosts follow <code>ubuntu-latest</code> and <code>macos-latest</code>
+where compatible. Linux CLI producers retain Ubuntu 24.04 to avoid raising
+their glibc baseline when the alias advances; native arm64 jobs retain
+<code>ubuntu-24.04-arm</code> because no supported floating arm64 Ubuntu alias exists.
+The macOS producer pins and verifies the existing arm64 binary deployment
+floor at macOS 11.0 independently of the build image. The Apple runtime still
+requires macOS 26 or newer.</p>
+<p>On failure, the script stops and preserves any branch, PR, or tag already
+created. Resolve the underlying failure, then run the <strong>same command with the
+same version</strong> to resume. It reuses a committed <code>release/vX.Y.Z</code> branch and its
+open or merged version-bump PR rather than creating duplicates. Uncommitted
+release files are retained in the temporary worktree whose path is printed for
+recovery; inspect and finish that work before retrying.</p>
+<p>If the tag already exists, the script verifies its Cargo version and ancestry
+on <code>origin/main</code>, then watches its existing Release workflow. Failed runs rerun
+only failed jobs and their dependents, retaining successful build outputs.
+Cancelled or otherwise unsuccessful completed runs restart the whole workflow.
+The script waits for the new attempt before watching it; active runs are only
+watched, and successful runs are not restarted. Retries remain subject to
+GitHub's rerun window and artifact retention.</p>
+<p>Reruns use the original tag's commit and workflow definition, not newer changes
+on <code>main</code>. If a fix changes source or workflow code, publish a new version from
+the fixed commit. Recovering a failed, unpublished tag instead requires an
+explicit maintainer decision outside this script; never move a published tag.</p>
+<p>A local tag not yet pushed is published unchanged. Existing tags are never
+replaced, and conflicting local and remote tags or release branches require
+manual inspection. Check registration, merge completion, release run discovery,
+and retry registration each have a ten-minute timeout.</p>
+<h3 id="stable-homebrew-updates">Stable Homebrew updates</h3>
+<p>Homebrew updates are owned by
+<a href="https://github.com/mbianchidev/homebrew-tap">mbianchidev/homebrew-tap</a>, not the
+SendBox Release workflow. SendBox continues to publish its host archives,
+signed guest bundles, adjacent SHA-256 files, and tag-bound release-workflow
+attestations. It does not push tap branches or create tap PRs, and requires no
+tap-write secret, cross-repository token, or new credential.</p>
+<p><strong>The central updater is pending review and activation in the tap.</strong> Once
+enabled, it checks included projects' stable releases hourly and downloads the
+existing SendBox archives for macOS arm64, Linux x86_64, and Linux aarch64, plus
+their checksum files. It recomputes SHA-256 against GitHub's asset digests and
+the adjacent published checksums, and verifies attestations from
+<code>mbianchidev/sendbox/.github/workflows/release.yaml</code> bound to <code>refs/tags/vX.Y.Z</code>
+on GitHub-hosted runners. It does not rebuild the CLI or guest bundles.</p>
+<p>Only a published, non-draft, non-prerelease <code>vX.Y.Z</code> matching GitHub's latest
+stable release at or above the patched-release floor v0.2.3 is eligible.
+Older releases, a newer formula, and a stable release that supersedes an
+in-flight verification cannot downgrade it. Prereleases do not update the
+stable formula, GitHub's latest release, or the GHCR <code>latest</code> tag.</p>
+<p>The tap prepares one verified release-only batch PR and explicitly runs its
+complete native CI. A separate trusted-default-branch workflow automatically
+merges eligible release-only bot updates only after CI and review guards pass.
+Updates normally become available within an hour of artifact publication,
+subject to those gates. Implementation PRs still require human review and
+merge; source changes alone do not enable central automation.</p>
+<p>After the source and tap implementation PRs are approved and merged and the
+central updater is enabled, revoke the retired SendBox tap SSH deploy key and
+remove its old Actions secret. Older tag reruns retain their original workflow
+definition; retiring that credential prevents them from writing to the tap.
+Keep the release-signing secret configured.</p>
+<p>If an update is blocked, inspect the central updater's Actions run and update
+PR in the tap, resolve the verification, CI, or review failure, then rerun the
+applicable tap workflow. Do not run <code>scripts/release.sh</code>, create another tag,
+move an existing tag, or republish artifacts just to retry a formula update.</p>
+<h2 id="build-from-source">Build from source</h2>
+<pre tabindex="0"><code class="language-bash">git clone https://github.com/mbianchidev/sendbox.git
+cd sendbox
+make install</code></pre>
+<p>Source installs require a separately attested signed guest bundle and trust
+root; tagged host artifacts already include the matching pair.</p>
+<p>For an interactive runtime preflight and configuration flow:</p>
+<pre tabindex="0"><code class="language-bash">./setup.sh</code></pre>
+<p>Kata installation and containerd configuration are documented in the
+<a href="../kata-containers/">Kata Containers guide</a>.</p>
+<h2 id="unsigned-macos-packages">Unsigned macOS packages</h2>
+<p>The <code>.pkg</code> and <code>.dmg</code> are not Apple-signed or notarized. Verify their GitHub
+attestation and checksum before installation. If Gatekeeper blocks a verified
+download, approve that artifact in Finder or System Settings, or remove only its
+quarantine attribute:</p>
+<pre tabindex="0"><code class="language-bash">xattr -dr com.apple.quarantine sendbox-&lt;version&gt;-macos-arm64.pkg</code></pre>
+<p>Do not disable Gatekeeper globally. The package removes quarantine from the
+installed <code>/usr/local/bin/sendbox</code> only after the installer has been approved.
+The DMG <code>install.sh</code> replaces the shared payload through a fresh staging
+directory, removes stale upgrade files, and enforces root ownership with <code>0555</code>
+guest executables and <code>0444</code> bundle metadata and trust roots.</p>
+<p>Continue with the <a href="../configuration/">configuration guide</a> after installation.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/installation.md"><code>docs/installation.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/installation.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../overview/"><span class="pager-label">Previous</span> Overview and quick start</a>
+<a class="pager-next" href="../configuration/"><span class="pager-label">Next</span> Configuration</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="./" aria-current="page">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

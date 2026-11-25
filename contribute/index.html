@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contribute | SendBox</title>
+  <meta name="description" content="How to contribute to SendBox and SendBox Fleet: source setup, checks, architecture, roadmaps and private vulnerability reporting.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Contribute | SendBox">
+  <meta property="og:description" content="Source setup, checks, architecture, roadmaps and private vulnerability reporting for SendBox and SendBox Fleet.">
+  <meta property="og:url" content="https://sendbox.synctune.it/contribute/">
+  <link rel="canonical" href="https://sendbox.synctune.it/contribute/">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<!-- build:header -->
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../"><img src="../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../sendbox/">SendBox docs</a></li>
+        <li><a href="../fleet/">Fleet docs</a></li>
+        <li><a href="./" aria-current="page">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<!-- /build:header -->
+<main id="main">
+  <section class="project-hero" aria-labelledby="contribute-title">
+    <div class="wrap">
+      <p class="eyebrow">Contributor guide</p>
+      <h1 id="contribute-title">Contribute to SendBox</h1>
+      <p class="lede">Both projects are Apache-2.0 and developed in the open on GitHub.</p>
+      <p>For larger changes, open an issue first to discuss the approach. Use synthetic data in tests and examples, and never commit real credentials, tokens or personal data. Report vulnerabilities privately, not in issues or pull requests.</p>
+    </div>
+  </section>
+
+  <div class="wrap docs-index">
+    <section class="doc-group" aria-labelledby="sendbox-contribute">
+      <h2 id="sendbox-contribute">SendBox</h2>
+      <p>The CLI, runtimes and guest services live in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a>. The Rust toolchain is pinned in the repository.</p>
+      <ul class="doc-list">
+        <li><a href="../sendbox/contributing/"><span class="doc-title">Contributing guide</span><span class="doc-summary">Source setup, checks, documentation conventions and release procedures.</span></a></li>
+        <li><a href="../sendbox/qualification/"><span class="doc-title">Qualification</span><span class="doc-summary">The qualification inventory, conformance checks and benchmarks.</span></a></li>
+        <li><a href="../sendbox/architecture/runtime-core/"><span class="doc-title">Architecture</span><span class="doc-summary">Start with the runtime core contract, then follow the architecture section of the docs.</span></a></li>
+        <li><a href="../sendbox/security-model/"><span class="doc-title">Security model</span><span class="doc-summary">The boundaries SendBox enforces and the assumptions it makes. Changes must keep them.</span></a></li>
+        <li><a href="../sendbox/roadmap/"><span class="doc-title">Roadmap</span><span class="doc-summary">Planned work, future proposals and historical designs.</span></a></li>
+        <li><a href="../sendbox/security-policy/"><span class="doc-title">Report a vulnerability</span><span class="doc-summary">Private reporting through GitHub security advisories.</span></a></li>
+      </ul>
+      <p class="actions"><a class="button secondary" href="https://github.com/sendbox-dev/sendbox/issues">SendBox issues</a> <a class="button secondary" href="https://github.com/sendbox-dev/sendbox/pulls">SendBox pull requests</a></p>
+    </section>
+
+    <section class="doc-group" aria-labelledby="fleet-contribute">
+      <h2 id="fleet-contribute">SendBox Fleet</h2>
+      <p>The governance service lives in <a href="https://github.com/sendbox-dev/sendbox-fleet">sendbox-dev/sendbox-fleet</a>. Its contract types come from <code>sendbox-governance</code>: change them in the SendBox repository first, then update the pin.</p>
+      <ul class="doc-list">
+        <li><a href="../fleet/contributing/"><span class="doc-title">Contributing guide</span><span class="doc-summary">Trust boundaries to keep, contract changes, migrations and pre-PR checks.</span></a></li>
+        <li><a href="../fleet/development/"><span class="doc-title">Development</span><span class="doc-summary">Configuration, bootstrap, local runs, tests and logs.</span></a></li>
+        <li><a href="../fleet/architecture/"><span class="doc-title">Architecture</span><span class="doc-summary">Trust boundaries, authentication, roles, API surface, schema and audit.</span></a></li>
+        <li><a href="../fleet/threat-model/"><span class="doc-title">Threat model</span><span class="doc-summary">What the service defends against and how.</span></a></li>
+        <li><a href="../fleet/contract/"><span class="doc-title">Shared contract</span><span class="doc-summary">How the sendbox-governance contract is pinned and versioned.</span></a></li>
+        <li><a href="../fleet/security-policy/"><span class="doc-title">Report a vulnerability</span><span class="doc-summary">Private reporting through GitHub security advisories.</span></a></li>
+      </ul>
+      <p class="actions"><a class="button secondary" href="https://github.com/sendbox-dev/sendbox-fleet/issues">Fleet issues</a> <a class="button secondary" href="https://github.com/sendbox-dev/sendbox-fleet/pulls">Fleet pull requests</a></p>
+    </section>
+
+    <section class="doc-group" aria-labelledby="website-contribute">
+      <h2 id="website-contribute">Documentation and this website</h2>
+      <p>The documentation pages on this site are published unchanged from each project's repository at a recorded commit. To fix or extend a page, change the document in its project repository; each page links to its source and has an edit link. The site is updated by syncing to a newer commit.</p>
+      <p>The website itself is plain HTML and CSS with no dependencies. Its source, sync and check scripts are in <a href="https://github.com/sendbox-dev/sendbox.synctune.it">sendbox-dev/sendbox.synctune.it</a>; see its <a href="https://github.com/sendbox-dev/sendbox.synctune.it/blob/main/docs/maintenance.md">maintenance guide</a>.</p>
+    </section>
+  </div>
+</main>
+<!-- build:footer -->
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="./">Contribute</a></p>
+  </div>
+</footer>
+<!-- /build:footer -->
+</body>
+</html>

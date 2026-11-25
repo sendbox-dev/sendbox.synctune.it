@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent orchestration | SendBox docs</title>
+  <meta name="description" content="Status: production transport-neutral orchestration. sendbox-agent owns an immutable run plan and the pure host-side state machine. sendbox-host composes it…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Agent orchestration | SendBox docs">
+  <meta property="og:description" content="Status: production transport-neutral orchestration. sendbox-agent owns an immutable run plan and the pure host-side state machine. sendbox-host composes it…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/agent-orchestration/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/agent-orchestration/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Agent orchestration</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="host-agent-orchestration">Host Agent Orchestration</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#run-sequence">Run sequence</a></li>
+<li><a href="#state-model">State model</a></li>
+</ol>
+</nav>
+<p>Status: <strong>production transport-neutral orchestration</strong>. <code>sendbox-agent</code> owns an
+immutable run plan and the pure host-side state machine. <code>sendbox-host</code> composes
+it with CLI <code>run</code>, concrete Apple/Kata/Hyperlight adapters, guest platform
+controls, MCP, and security persistence without adding those dependencies to the
+orchestration crate.</p>
+<h2 id="run-sequence">Run sequence</h2>
+<ol>
+<li>Validate <code>SandboxConfiguration</code> and compile workspace, mount, environment,
+command, workload-secret, package-policy, capability, and transport intents
+into <code>RunPlan</code>.
+An optional enclosing workspace becomes the signed mount root while the
+initial cwd and Git guard stay bound to the selected project.</li>
+<li>Reject missing runtime, brokered-exec, or transport capabilities before
+resource creation. Package-enabled plans additionally require authenticated
+audit/report capability.</li>
+<li>Preflight, initialize, create, and start the selected runtime.</li>
+<li>Resolve redacted bootstrap material, including registry-only credentials
+that cannot overlap workload secrets, provision a lifecycle-owned channel,
+and accept exactly one stream before the readiness deadline.</li>
+<li>Authenticate the expected session with <code>sendbox-protocol</code> and verify guest
+exec, streamed-I/O, and health capabilities.</li>
+<li>Resolve named secret envelopes through an injected trait and send references
+plus envelopes to the guest. Debug output never exposes envelope bytes.</li>
+<li>Launch and monitor the workload through the guest channel. Runtime <code>exec</code>
+remains bootstrap/control-only.</li>
+<li>After a terminal response, fetch the bounded package report exactly once
+when package analysis is enabled, fetch a single bounded syscall report
+when tracing is requested, then gracefully close the authenticated
+session. The guest report is returned to <code>sendbox-host</code> for independent
+digest/schema validation and owner-only atomic persistence.</li>
+<li>On success, signal, cancellation, transport loss, service death, report
+failure, or backpressure, clean up guest execution, guest session, channel,
+runtime stop, and runtime resources in order.</li>
+</ol>
+<p>Native CLI profiles do not change this state machine or add a host execution
+path. Requested syscall tracing additionally requires authenticated readiness
+for the mandatory BPF service. Guest homes are session-specific and never
+inherit the host home. See <a href="../../cli-agents/">CLI compatibility</a>.</p>
+<p><code>RunFailure</code> preserves the primary error and every cleanup failure separately.
+Cancellation uses explicit tokens and an injected signal source. Readiness uses
+a bounded Tokio deadline; tests use deterministic in-memory or Unix streams and
+fault injection rather than vendor processes.</p>
+<h2 id="state-model">State model</h2>
+<figure class="diagram">
+<pre tabindex="0"><code class="language-mermaid">stateDiagram-v2
+    Planned --&gt; Preflighted
+    Preflighted --&gt; Initialized
+    Initialized --&gt; Created
+    Created --&gt; Started
+    Started --&gt; ChannelProvisioned
+    ChannelProvisioned --&gt; GuestReady
+    GuestReady --&gt; SecretsResolved
+    SecretsResolved --&gt; Running
+    Running --&gt; ReportRetrieved
+    ReportRetrieved --&gt; Cleaning
+    Running --&gt; Cleaning
+    Cleaning --&gt; Completed
+    Planned --&gt; Failed
+    Preflighted --&gt; Failed
+    Initialized --&gt; Cleaning
+    Created --&gt; Cleaning
+    Started --&gt; Cleaning
+    ChannelProvisioned --&gt; Cleaning
+    GuestReady --&gt; Cleaning
+    SecretsResolved --&gt; Cleaning</code></pre>
+<figcaption>Diagram source (Mermaid). <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/agent-orchestration.md">View it rendered on GitHub</a>.</figcaption>
+</figure>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/agent-orchestration.md"><code>docs/architecture/agent-orchestration.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/agent-orchestration.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../security-records/"><span class="pager-label">Previous</span> Security records</a>
+<a class="pager-next" href="../native-project-analysis/"><span class="pager-label">Next</span> Native project analysis</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="./" aria-current="page">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

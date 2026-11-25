@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shared contract | SendBox Fleet docs</title>
+  <meta name="description" content="How the sendbox-governance contract is pinned and versioned.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Shared contract | SendBox Fleet docs">
+  <meta property="og:description" content="How the sendbox-governance contract is pinned and versioned.">
+  <meta property="og:url" content="https://sendbox.synctune.it/fleet/contract/">
+  <link rel="canonical" href="https://sendbox.synctune.it/fleet/contract/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../sendbox/">SendBox docs</a></li>
+        <li><a href="../" class="is-active">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox Fleet docs</a></li>
+<li><span aria-current="page">Shared contract</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox Fleet docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox Fleet · Get started</p>
+<h1 id="shared-contract">Shared contract</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#how-it-is-pinned">How it is pinned</a></li>
+<li><a href="#what-the-api-reuses">What the API reuses</a></li>
+<li><a href="#versioning">Versioning</a></li>
+</ol>
+</nav>
+<p>SendBox hosts and this service must agree byte-for-byte on identities,
+profile references, session bindings, grants, request contexts, and
+decisions. That agreement lives in one crate, <code>sendbox-governance</code>, in the
+<a href="https://github.com/sendbox-dev/sendbox">sendbox</a> repository
+(<code>crates/sendbox-governance</code>). This service depends on it instead of
+redefining any of those types.</p>
+<h2 id="how-it-is-pinned">How it is pinned</h2>
+<pre tabindex="0"><code class="language-toml"># Cargo.toml (workspace)
+sendbox-governance = { git = &quot;https://github.com/mbianchidev/sendbox&quot;, branch = &quot;main&quot; }
+sendbox-security = { git = &quot;https://github.com/mbianchidev/sendbox&quot;, branch = &quot;main&quot; }</code></pre>
+<p><code>sendbox-security</code> supplies the signing envelope and trust store used for
+profile signatures and audit heads.</p>
+<ul>
+<li>The dependency tracks sendbox <code>main</code>, and <code>Cargo.lock</code> records the exact
+commit. CI builds with <code>--locked</code>, so every build sees the same contract
+until the lockfile moves.</li>
+<li><a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/.github/dependabot.yml">Dependabot</a> checks sendbox <code>main</code> daily and opens
+one pull request (group <code>sendbox-contract</code>) that moves <code>Cargo.lock</code> to the
+latest commit. The
+<a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/.github/workflows/dependabot-auto-merge.yml">auto-merge workflow</a> enables
+auto-merge when that pull request updates nothing but <code>sendbox-governance</code>
+and <code>sendbox-security</code>, and branch protection merges it only after every CI
+job passes. A contract change that breaks this service leaves the pull
+request open with failing checks for a maintainer to fix.</li>
+<li>Both crates inherit versions from the sendbox workspace and depend on
+<code>sendbox-core</code> by path; Cargo resolves all three from the same git checkout,
+so they always share one commit.</li>
+<li>Only <code>main</code> is tracked, so the recorded commit cannot disappear when sendbox
+feature branches are rewritten or deleted. A pull request that needs an
+unmerged contract change may track the sendbox pull request branch while
+both are in review. CI's last step,
+<a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/scripts/check-contract-pin.sh"><code>scripts/check-contract-pin.sh</code></a>, fails
+until every SendBox crate is locked to a sendbox <code>main</code> commit again (it also
+rejects <code>rev</code>/<code>tag</code> pins and local path patches), so such a pull request
+cannot merge. After the sendbox pull request merges, set <code>branch = &quot;main&quot;</code>
+and run <code>cargo update -p sendbox-governance -p sendbox-security</code>.</li>
+</ul>
+<p>To move the lockfile by hand, to the latest <code>main</code> commit or to a specific one:</p>
+<pre tabindex="0"><code class="language-sh">cargo update -p sendbox-governance -p sendbox-security
+cargo update -p sendbox-governance --precise &lt;commit-sha&gt;   # moves all three crates
+scripts/check-contract-pin.sh
+cargo test --locked --workspace</code></pre>
+<h2 id="what-the-api-reuses">What the API reuses</h2>
+<div class="table-scroll" role="group" aria-label="What the API reuses table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Contract type</th><th scope="col">Used by</th></tr></thead>
+<tbody>
+<tr><td><code>api::CallerIdentity</code></td><td><code>GET /v1/whoami</code> response</td></tr>
+<tr><td><code>api::SessionAdmissionRequest</code>, <code>api::SessionAdmission</code>, <code>GovernanceBinding</code></td><td><code>POST /v1/sessions:admit</code> body and response</td></tr>
+<tr><td><code>api::SessionEnd</code></td><td><code>POST /v1/sessions/{session}:end</code> body</td></tr>
+<tr><td><code>GrantRequest</code>, <code>CredentialGrant</code></td><td><code>POST /v1/grants</code> body and response</td></tr>
+<tr><td><code>GrantId</code></td><td><code>:renew</code> and <code>:revoke</code> path parameter; renew response is a <code>CredentialGrant</code></td></tr>
+<tr><td><code>api::RevokeGrantRequest</code>, <code>RevocationReason</code></td><td><code>:revoke</code> body</td></tr>
+<tr><td><code>RequestContext</code>, <code>Decision</code>, <code>DenyReason</code>, <code>evaluate_request</code></td><td><code>POST /v1/authorize</code> body, response, and decision rules</td></tr>
+<tr><td><code>ProfileId</code>, <code>ProfileRef</code>, <code>GovernanceProfile</code>, <code>check_current</code></td><td><code>/v1/profiles/{profile_id}</code>; publication bodies are parsed with <code>GovernanceProfile::parse</code></td></tr>
+<tr><td><code>PolicyException</code>, <code>ExceptionScope</code>, <code>ExceptionId</code>, <code>api::ExceptionList</code></td><td><code>/v1/exceptions</code> responses; scopes are checked with <code>GovernanceProfile::permits_exception</code></td></tr>
+<tr><td><code>ProjectId</code>, <code>PrincipalId</code></td><td>Role, exception, and audit endpoints</td></tr>
+<tr><td><code>Sha256Digest</code>, <code>canonical_digest</code></td><td>Digests in responses, binding storage, and audit event hashes</td></tr>
+<tr><td><code>api::TokenRequest</code>, <code>api::IssuedToken</code></td><td><code>POST /v1/tokens</code> body and response</td></tr>
+<tr><td><code>api::RequestOutcomeReport</code>, <code>api::ReportedOutcome</code></td><td><code>POST /v1/grants/{grant}:outcome</code> body, checked with <code>RequestOutcomeReport::validate</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Validation is the contract's own: identifier grammars, <code>deny_unknown_fields</code>,
+<code>GovernanceBinding::validate</code>, <code>validate_method</code>, <code>validate_path_prefix</code>, and
+<code>GovernanceProfile::parse</code>. Invalid input is a <code>400</code> problem.</p>
+<p>Wire types a SendBox host also uses live in <code>sendbox_governance::api</code>. Types
+only people use live here, in the route module that uses them:
+<code>CreateProject</code>, <code>ProjectRole</code> and <code>RoleBinding</code>, <code>ExceptionRequest</code>,
+<code>ProfilePublication</code> and <code>MinimumRevision</code>, <code>TokenSummary</code> and <code>TokenList</code>,
+and the audit query, page, event, and signed-head types. Profile signatures use SendBox's signing envelope
+(<code>sendbox_security::provenance::DetachedSignature</code> in a
+<code>sendbox.governance-signatures</code> bundle), verified with the same trust store
+code as hosts.</p>
+<h2 id="versioning">Versioning</h2>
+<ul>
+<li><code>sendbox_governance::CONTRACT_VERSION</code> (currently <code>2</code>, which added
+exceptions to the session binding) is the wire and digest version. <code>GovernanceBinding</code> and <code>CredentialGrant</code> carry it, and validation
+rejects any other value. The server logs it at startup.</li>
+<li>Contract structs use <code>deny_unknown_fields</code>, so adding a field is a breaking
+change for older peers. Any change to a contract type or to how digests are
+computed requires bumping <code>CONTRACT_VERSION</code> in the sendbox repository and
+then updating this pin; hosts and the fleet must be upgraded together or
+support both versions during the transition.</li>
+<li>The <code>/v1</code> path prefix versions the HTTP API surface (routes, fleet-only
+types, problem format). It changes independently of <code>CONTRACT_VERSION</code>.</li>
+</ul>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/docs/contract.md"><code>docs/contract.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox-fleet">sendbox-dev/sendbox-fleet</a> at commit <a href="https://github.com/sendbox-dev/sendbox-fleet/commit/962a6cf18913e41995dfde12c872be9497d2b1e9"><code>962a6cf</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox-fleet/edit/main/docs/contract.md">edit it in sendbox-dev/sendbox-fleet</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../architecture/"><span class="pager-label">Previous</span> Architecture</a>
+<a class="pager-next" href="../threat-model/"><span class="pager-label">Next</span> Threat model</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox Fleet documentation">
+<p class="nav-project"><a href="../">SendBox Fleet docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../deployment/">Deployment</a></li>
+<li><a href="../architecture/">Architecture</a></li>
+<li><a href="./" aria-current="page">Shared contract</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../threat-model/">Threat model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../development/">Development</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCP broker | SendBox docs</title>
+  <meta name="description" content="crates/sendbox-mcp provides the shared MCP authorization engine for exact stdio servers and trusted Streamable HTTP upstreams. The host validates…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="MCP broker | SendBox docs">
+  <meta property="og:description" content="crates/sendbox-mcp provides the shared MCP authorization engine for exact stdio servers and trusted Streamable HTTP upstreams. The host validates…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/mcp-broker/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/mcp-broker/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">MCP broker</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="native-mcp-boundary">Native MCP boundary</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#scope">Scope</a></li>
+<li><a href="#data-flow">Data flow</a></li>
+<li><a href="#stdio-launch-contract">Stdio launch contract</a></li>
+<li><a href="#streamable-http-gateway">Streamable HTTP gateway</a></li>
+<li><a href="#egress-bypass-protection">Egress bypass protection</a></li>
+<li><a href="#audit-and-observation">Audit and observation</a></li>
+<li><a href="#trust-limits">Trust limits</a></li>
+</ol>
+</nav>
+<h2 id="scope">Scope</h2>
+<p><code>crates/sendbox-mcp</code> provides the shared MCP authorization engine for exact
+stdio servers and trusted Streamable HTTP upstreams. The host validates
+project-local MCP definitions, signs the exact hierarchical policy into the
+boundary plan, and delivers it to authenticated Apple and Kata guests.</p>
+<p>Every configured server has:</p>
+<ul>
+<li>a stable policy ID;</li>
+<li>one exact transport identity: ordered absolute stdio argv or normalized HTTP
+endpoint;</li>
+<li>an independent deny-first tool policy;</li>
+<li>a non-reversible identity fingerprint used by inspection and audit.</li>
+</ul>
+<p>Project aliases and caller-provided IDs never select policy. Unknown,
+ambiguous, or changed identities fail closed.</p>
+<h2 id="data-flow">Data flow</h2>
+<figure class="diagram">
+<pre tabindex="0"><code class="language-mermaid">flowchart LR
+    Config[Signed hierarchical MCP policy] --&gt; Resolve[Exact server resolution]
+    StdioClient[MCP client stdio] --&gt; StdioBroker[Installed stdio broker]
+    StdioBroker --&gt; Frame[Bounded frame + JSON-RPC validation]
+    Frame --&gt; Resolve
+
+    HttpClient[MCP client HTTP] --&gt; Route[127.0.0.1:15082/mcp/server-id]
+    Route --&gt; Gateway[Trusted Streamable HTTP gateway]
+    Gateway --&gt; Resolve
+
+    Resolve --&gt; Tools[Shared deny-first tool evaluator]
+    Tools --&gt; List[tools/list filtering]
+    Tools --&gt; Call[tools/call check]
+    List --&gt; Audit[Mandatory redacted audit]
+    Call --&gt; Audit
+    Audit --&gt; StdioUpstream[Exact stdio child]
+    Audit --&gt; HttpUpstream[Exact marked HTTP upstream]</code></pre>
+<figcaption>Diagram source (Mermaid). <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/mcp-broker.md">View it rendered on GitHub</a>.</figcaption>
+</figure>
+<p>The shared evaluator validates method/tool shape, applies deny precedence,
+filters every <code>tools/list</code> page, and checks every <code>tools/call</code> at forwarding
+time. Audit persistence occurs before an allowed, denied, or dropped action
+takes effect; audit failure denies and terminates the affected path.</p>
+<h2 id="stdio-launch-contract">Stdio launch contract</h2>
+<p>The guest installs a root-owned <code>sendbox-guest</code> broker at
+<code>/run/sendbox-boundary/mcp-broker</code> and policy material below
+<code>/run/sendbox-boundary</code>. Project configuration must invoke that broker, then
+<code>--</code>, then one exact command from
+<code>policy.boundaries.tool_calls.servers</code>.</p>
+<p>The broker derives the server policy from exact executable and ordered
+arguments. It does not accept a policy ID from the project. The launcher:</p>
+<ul>
+<li>executes the absolute binary directly without a shell;</li>
+<li>rejects shell and package-runner executables;</li>
+<li>clears inherited environment, then applies only signed fixed values and
+approved secret names;</li>
+<li>uses the signed working directory;</li>
+<li>pipes protocol stdin/stdout and bounds stderr;</li>
+<li>kills and reaps the child on malformed traffic, saturation, I/O failure,
+cancellation, or premature exit.</li>
+</ul>
+<p><code>FrameDecoder</code> supports newline, <code>Content-Length</code>, and first-frame automatic
+detection. Automatic mode locks after the first frame. Client and server
+request IDs are tracked independently; unmatched responses are terminal.</p>
+<h2 id="streamable-http-gateway">Streamable HTTP gateway</h2>
+<p>Remote project definitions never contain an upstream URL or credentials. They
+select only the deterministic loopback route:</p>
+<pre tabindex="0"><code class="language-text">http://127.0.0.1:15082/mcp/&lt;server-id&gt;</code></pre>
+<p>The route ID is untrusted input and must be one canonical path segment exactly
+matching a configured HTTP server. Encoded separators, traversal, case drift,
+prefixes, queries, fragments, and trailing slashes do not select policy.</p>
+<p>The gateway is a mandatory trusted guest service started before workload
+execution. It runs in the egress broker cgroup, resolves through a separate
+marked resolver, classifies every returned address, and dials only an exact
+validated address with <code>SO_MARK</code>. It never populates the agent-facing
+DNS/CONNECT authorization cache.</p>
+<p>HTTPS is the default. The gateway verifies certificate chains, validity,
+hostname, and SNI with system roots plus configured PEM roots. There is no
+verification-disable switch. Plaintext is accepted only for an explicitly
+enabled loopback development endpoint. Metadata addresses are always denied.</p>
+<p>Redirects are disabled by default. When enabled, each target must be an exact
+normalized allowlisted URL and is re-resolved and revalidated. The gateway
+strips hop-by-hop headers, cookies, compression, and unapproved protocol
+headers. Bearer credentials come from the signed gateway-only secret partition
+and are injected only into the selected upstream request.</p>
+<h3 id="protocol-modes">Protocol modes</h3>
+<ul>
+<li><code>streamable_http</code> is the modern POST-only mode. It accepts JSON or
+request-scoped SSE responses and rejects sessions, GET, DELETE, reconnect
+event IDs, upgrades, and server-initiated requests.</li>
+<li><code>streamable_http_2025</code> is an explicit compatibility mode with bounded issued
+sessions, GET/SSE, DELETE, server-initiated requests, and validated
+<code>Last-Event-ID</code>. Session and event IDs are bound to one server and gateway
+instance.</li>
+<li>Legacy 2024 HTTP+SSE is not implemented.</li>
+</ul>
+<p>Request/response bodies, SSE events, concurrent work, sessions, redirects, and
+idle/connect/request time are bounded by signed policy. Downstream disconnect
+cancels upstream work; transport or parser failure has no direct fallback.</p>
+<h2 id="egress-bypass-protection">Egress bypass protection</h2>
+<p>Any remote MCP server forces authenticated egress enforcement. The signed
+egress policy reserves primary and redirect origins from the normal CONNECT
+broker and disables direct-IP CONNECT while remote MCP is active. nftables
+admits agent traffic only to the exact loopback DNS, CONNECT, and MCP gateway
+ports. Only marked broker-cgroup traffic may leave the guest.</p>
+<p>TLS uprobes and BPF MCP observations remain observation-only. They do not
+authorize remote traffic and are not promoted into a plaintext policy
+mechanism.</p>
+<h2 id="audit-and-observation">Audit and observation</h2>
+<p>Stdio and HTTP decisions use one versioned audit schema. Records include server
+ID, transport, fingerprint, normalized endpoint when applicable, hashed session
+ID, method/tool, outcome, rule/reason, status, byte counts, and timing. They
+exclude command arguments, tool arguments, payloads, environment values, and
+credentials.</p>
+<p>The guest creates the audit file and Unix submission socket with bounded
+connections and reads. Workload-mediated stdio brokers submit structured
+events; the trusted HTTP gateway uses the same sink. Failure to submit or append
+is fatal to authorization.</p>
+<p>Optional <code>McpObservationEvent</code> capture remains available for brokered stdio
+traffic. Payload capture and BPF observations are diagnostic only.</p>
+<h2 id="trust-limits">Trust limits</h2>
+<ul>
+<li>Apple and Kata install the authenticated boundary. Hyperlight rejects MCP
+composition.</li>
+<li>Exact project validation prevents configuration drift but cannot prevent an
+alternate workload client from invoking an otherwise available binary.
+Command policy, image minimization, and kernel containment remain defense in
+depth.</li>
+<li>The gateway authorizes only traffic that reaches its exact loopback route.
+Kernel egress enforcement prevents direct-origin fallback.</li>
+</ul>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/mcp-broker.md"><code>docs/architecture/mcp-broker.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/mcp-broker.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../egress-enforcement/"><span class="pager-label">Previous</span> Egress enforcement</a>
+<a class="pager-next" href="../package-registry-proxy/"><span class="pager-label">Next</span> Package registry proxy</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="./" aria-current="page">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

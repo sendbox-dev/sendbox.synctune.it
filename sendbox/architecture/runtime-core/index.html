@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Runtime core | SendBox docs</title>
+  <meta name="description" content="sendbox-runtime defines the behavior shared by the production Apple, Kata, and Hyperlight adapters. Provider-specific launch code remains in dedicated…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Runtime core | SendBox docs">
+  <meta property="og:description" content="sendbox-runtime defines the behavior shared by the production Apple, Kata, and Hyperlight adapters. Provider-specific launch code remains in dedicated…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/runtime-core/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/runtime-core/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Runtime core</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="runtime-core-contract">Runtime Core Contract</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#provider-contract-and-concurrency">Provider contract and concurrency</a></li>
+<li><a href="#capability-layering">Capability layering</a></li>
+<li><a href="#hostguest-control-channel">Host/guest control channel</a></li>
+<li><a href="#cancellation">Cancellation</a></li>
+<li><a href="#host-process-execution">Host process execution</a></li>
+<li><a href="#output-ordering-and-loss">Output ordering and loss</a></li>
+<li><a href="#cleanup-transaction">Cleanup transaction</a></li>
+<li><a href="#clock-boundary">Clock boundary</a></li>
+</ol>
+</nav>
+<p><code>sendbox-runtime</code> defines the behavior shared by the production Apple, Kata, and
+Hyperlight adapters. Provider-specific launch code remains in dedicated crates;
+<code>sendbox-host</code> composes those adapters with guest services, egress, execution,
+credentials, MCP, project analysis, and security stores.</p>
+<p><code>sendbox-config::RuntimeProvider</code> is the configured provider <strong>kind</strong>. The
+<code>sendbox_runtime::RuntimeProvider</code> trait is the object-safe asynchronous behavior
+contract implemented by an adapter. They intentionally have the same domain term
+but no type dependency.</p>
+<h2 id="provider-contract-and-concurrency">Provider contract and concurrency</h2>
+<p>The provider lifecycle is:</p>
+<ol>
+<li><code>initialize</code> prepares host-side provider state.</li>
+<li><code>preflight</code> validates required capabilities before resource creation.</li>
+<li><code>create</code> creates a stopped container or VM.</li>
+<li><code>start</code> starts its supervised workload.</li>
+<li><code>provision_control_channel</code> creates a lifecycle-owned host/guest endpoint.</li>
+<li><code>status</code>, bootstrap/control <code>exec</code>, and <code>attach</code> interact with it.</li>
+<li><code>signal</code> and <code>stop</code> terminate work.</li>
+<li><code>cleanup</code> compensates all resources.</li>
+</ol>
+<p>Every asynchronous method returns an explicit <code>Send</code> boxed future and receives an
+explicit <code>CancellationToken</code>. Providers are <code>Send + Sync</code>. Calls for different
+containers may run concurrently. A provider must serialize or reject mutating
+calls for the same container, while status, capability reporting, and output
+consumption may run concurrently. A lifecycle update must validate and commit in
+one critical section; duplicate transitions are errors rather than implicit
+successes.</p>
+<p>The foundation state machine permits only these transitions:</p>
+<ul>
+<li><code>New</code> to <code>Initialized</code>, <code>Cleaning</code>, or <code>Failed</code></li>
+<li><code>Initialized</code> to <code>Created</code>, <code>Cleaning</code>, or <code>Failed</code></li>
+<li><code>Created</code> to <code>Running</code>, <code>Stopped</code>, <code>Cleaning</code>, or <code>Failed</code></li>
+<li><code>Running</code> to <code>Stopping</code>, <code>Stopped</code>, or <code>Failed</code></li>
+<li><code>Stopping</code> to <code>Stopped</code> or <code>Failed</code></li>
+<li><code>Stopped</code> to <code>Cleaning</code>, <code>Cleaned</code>, or <code>Failed</code></li>
+<li><code>Cleaning</code> to <code>Cleaned</code> or <code>Failed</code></li>
+<li><code>Failed</code> to <code>Cleaning</code> or <code>Cleaned</code></li>
+<li><code>Cleaned</code> is terminal</li>
+</ul>
+<p><code>RuntimeId</code> and <code>ContainerId</code> are validated, bounded identifiers rather than
+unstructured strings.</p>
+<h2 id="capability-layering">Capability layering</h2>
+<p>Runtime capabilities map explicitly to the authenticated protocol:</p>
+<div class="table-scroll" role="group" aria-label="Capability layering table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Runtime capability</th><th scope="col" class="align-right">Protocol capability ID</th></tr></thead>
+<tbody>
+<tr><td>Lifecycle</td><td class="align-right">1</td></tr>
+<tr><td>Exec</td><td class="align-right">2</td></tr>
+<tr><td>Streamed I/O</td><td class="align-right">3</td></tr>
+<tr><td>Signals</td><td class="align-right">4</td></tr>
+<tr><td>Mounts</td><td class="align-right">5</td></tr>
+<tr><td>Network</td><td class="align-right">6</td></tr>
+<tr><td>MCP</td><td class="align-right">7</td></tr>
+<tr><td>Audit</td><td class="align-right">8</td></tr>
+<tr><td>Health</td><td class="align-right">9</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>TransportProvisioning</code>, <code>BrokeredExec</code>, and the vsock, published Unix socket,
+inherited stdio, and inherited file-descriptor transport capabilities are
+runtime-local. They are deliberately filtered out of
+<code>sendbox_protocol::CapabilitySet</code>. <code>sendbox-runtime</code> depends on
+<code>sendbox-protocol</code> for this mapping; the protocol crate has no runtime dependency,
+so the layering is acyclic.</p>
+<h2 id="hostguest-control-channel">Host/guest control channel</h2>
+<p><code>ControlChannelRequest</code> binds one session and container to a typed endpoint kind,
+runtime lifecycle ownership, a bounded readiness timeout, and redacted bootstrap
+material delivery. Bootstrap material may use a pre-opened descriptor above
+stderr or an adapter-owned injection target; argv and environment delivery are
+not part of the contract.</p>
+<p><code>ProvisionedControlChannel</code> is a single-accept object-safe async handle. It
+returns the stream through the runtime lifecycle rather than a global path or
+registry, and explicit cleanup is idempotent. The contract models vsock,
+published Unix sockets, inherited stdio, inherited descriptors, and explicit
+unavailability. It does not define Apple, Kata, Hyperlight, or other vendor
+mappings.</p>
+<p>The readiness deadline covers channel acceptance and authenticated protocol
+readiness. Expiry is distinct from cancellation. Protocol frame limits provide
+bounded allocation and I/O after acceptance.</p>
+<p><code>RuntimeProvider::exec</code> is restricted to trusted bootstrap and control work.
+When <code>BrokeredExec</code> is required, agent workload launch must use the authenticated
+guest channel. A runtime adapter must not reinterpret workload execution as
+host-side runtime exec.</p>
+<p>An unavailable platform implementation uses <code>UnavailableRuntimeProvider</code>. It
+advertises no capabilities and returns a structured unavailable error rather
+than selecting a fallback.</p>
+<h2 id="cancellation">Cancellation</h2>
+<p>Cancellation is an explicit atomic state plus notification. It is not represented
+by a watch or sender channel. Dropping one token, or every token, does not cancel
+anything and cannot be confused with channel closure. Only <code>cancel()</code> changes the
+state.</p>
+<p>Dropping an operation future is not success. Adapters remain responsible for
+registering compensation before a partial resource becomes externally visible.</p>
+<h2 id="host-process-execution">Host process execution</h2>
+<p>The process runner never invokes a shell. A command selects either an absolute
+program path or a named program resolved through an injected <code>ProgramResolver</code>.
+The runner rejects a relative resolver result. Arguments and environment values
+carry explicit sensitive flags used by diagnostics. The environment is cleared
+by default, and invalid NULs, environment keys, duplicate keys, program forms,
+and missing or non-directory working directories fail before spawn.</p>
+<p>Stdout and stderr have independent drain tasks. Each task writes directly to a
+bounded capture buffer and performs a nonblocking publish while holding only a
+short ordering lock. There is no bounded intermediate collector that can stall
+pipe reads. Captures report total and truncated bytes.</p>
+<p>Unix children start in a new process group using the standard library
+<code>process_group(0)</code> configuration. Signals use the safe <code>nix::killpg</code> API.
+Cancellation and timeout send <code>SIGTERM</code>, wait the configured grace period, then
+send <code>SIGKILL</code> and reap. Once the leader is reaped, the runner sends <code>SIGKILL</code>
+to the group again, so a descendant that missed <code>SIGTERM</code> (for example one
+forked while the signal was in flight, which macOS can leave alive) cannot keep
+the output pipes open and stall the drain. <code>ESRCH</code> and macOS's <code>EPERM</code> for a
+group with only exiting members mean nothing is left to kill.
+<code>RunningProcess::drop</code> directly sends <code>SIGKILL</code> to the
+group synchronously as a last-resort fallback; it does not depend on an async
+command channel.</p>
+<p>A process can escape this containment by successfully calling <code>setsid</code> or
+<code>setpgid</code>. Process groups are lifecycle hygiene, not a sandbox boundary. Later
+guest and kernel enforcement must prevent or contain escape where policy
+requires it. Non-Unix code paths avoid the Unix dependency and return an explicit
+unsupported signal error. Cancellation and timeout can only kill the direct
+child there. Those paths were not platform-qualified by this change, so no
+descendant or graceful-signal guarantee is claimed.</p>
+<h2 id="output-ordering-and-loss">Output ordering and loss</h2>
+<p>Every data event identifies stdout or stderr and contains a monotonic global
+sequence plus a monotonic per-stream sequence. Publishing to the bounded client
+channel uses <code>try_send</code>; a slow or dropped client can never block either pipe
+drain.</p>
+<p>Dropped events are not hidden. The next delivered data event carries
+<code>dropped_before</code> metadata with event, byte, sequence-range, and per-stream counts.
+If no later event can be delivered, the subscription emits a final loss event
+after queued data. Process outcomes also retain aggregate delivered and dropped
+statistics. Channel closure means end-of-stream, while cancellation returns a
+separate cancellation error.</p>
+<h2 id="cleanup-transaction">Cleanup transaction</h2>
+<p>A cleanup transaction is a reverse-order compensation stack:</p>
+<ul>
+<li>every incomplete step is attempted in a pass, even after failures;</li>
+<li>all failures are returned with their step names;</li>
+<li>successful steps are permanently marked complete;</li>
+<li>failed steps remain pending and are retried by later calls;</li>
+<li>a fully completed transaction is idempotent and performs no further work;</li>
+<li>each step must treat an already-absent resource as success.</li>
+</ul>
+<p><code>OperationFailure</code> preserves the primary runtime error as its error source and
+attaches the structured cleanup report. Cleanup failures therefore never replace
+or flatten the initiating failure.</p>
+<h2 id="clock-boundary">Clock boundary</h2>
+<p>Process start, finish, and elapsed metadata use the injected <code>Clock</code>.
+<code>SystemClock</code> is monotonic, while <code>sendbox-testkit::ManualClock</code> makes metadata
+tests deterministic. OS timeout selection necessarily uses Tokio time; advancing
+<code>ManualClock</code> does not advance or trigger a process timeout, and the API makes no
+claim that it does.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/runtime-core.md"><code>docs/architecture/runtime-core.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/runtime-core.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../../roadmap/"><span class="pager-label">Previous</span> Roadmap</a>
+<a class="pager-next" href="../execution-broker/"><span class="pager-label">Next</span> Execution broker</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="./" aria-current="page">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

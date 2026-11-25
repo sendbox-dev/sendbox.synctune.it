@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Secrets migration | SendBox docs</title>
+  <meta name="description" content="Moving existing secrets to the current secret store.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Secrets migration | SendBox docs">
+  <meta property="og:description" content="Moving existing secrets to the current secret store.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/secrets-migration/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/secrets-migration/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Secrets migration</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Security</p>
+<h1 id="secret-store-migration">Secret Store Migration</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#compatibility">Compatibility</a></li>
+<li><a href="#linux">Linux</a></li>
+<li><a href="#macos">macOS</a></li>
+<li><a href="#credential-proxy-migration">Credential proxy migration</a></li>
+</ol>
+</nav>
+<h2 id="compatibility">Compatibility</h2>
+<p>The Rust store preserves the Swift Keychain service identifier
+<code>com.sendbox.secrets</code> and the Linux hex-encoded directory and filename layout.
+Legacy values remain readable before migration.</p>
+<h2 id="linux">Linux</h2>
+<ol>
+<li>Open the existing store. Any symlink, non-owner entry, non-directory
+component, non-<code>0700</code> directory, or non-<code>0600</code> file stops migration.</li>
+<li>Retrieve the legacy value through the typed store.</li>
+<li>Call <code>SecretStore::migrate</code> for that name.</li>
+<li>SendBox writes a versioned temporary record, syncs it, atomically replaces
+the legacy file, and syncs the directory.</li>
+<li>Re-running migration is safe and returns the existing versioned metadata.</li>
+</ol>
+<p>There is no bulk plaintext export. Rollback readers must continue to understand
+the versioned record before a user migrates production data.</p>
+<h2 id="macos">macOS</h2>
+<p>Keeping the service identifier unchanged avoids unnecessary item duplication,
+but a changed code-signing identity can still cause Keychain ACL prompts.
+Generate a <code>KeychainMigrationPlan</code> using the old and new signing identities.
+When reauthorization is required, obtain explicit user confirmation and run the
+migration using the final signed binary.</p>
+<p>Never delete an old-service item until the replacement has been stored and
+verified. Never silently relax an ACL, create an empty replacement, or fall
+back to a different service. Cross-service movement requires an explicit
+<code>MigrationAuthorization</code> and performs direct Keychain-to-Keychain transfer
+without producing a plaintext archive.</p>
+<h2 id="credential-proxy-migration">Credential proxy migration</h2>
+<p>The Rust credential broker does not preserve the Swift proxy's transparent
+redirect, DNS override, <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code>, hybrid environment fallback,
+or CONNECT behavior. Those surfaces implied TLS interception without owning a
+trusted certificate boundary.</p>
+<p>Migrate each compatible agent to the explicit per-rule base URL returned by
+<code>BrokerAgentConfiguration</code>. The agent must preserve the original service path
+and query after that base URL. Agents that cannot override their API base URL
+cannot use broker injection.</p>
+<p>Do not migrate GitHub repository credentials into ordinary vault rules.
+<code>GH_TOKEN</code>, <code>GITHUB_TOKEN</code>, enterprise token variants, askpass/SSH forwarding,
+OAuth/PAT values, and GitHub App private keys remain guarded names. Use
+<code>GitHubMetadataClient</code> authorization and only consume the resulting
+session-bound token after repository scope succeeds. Copilot credentials remain
+independent.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/migration/secrets.md"><code>docs/migration/secrets.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/migration/secrets.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../egress-trust-boundary/"><span class="pager-label">Previous</span> Egress trust boundary</a>
+<a class="pager-next" href="../security-records-migration/"><span class="pager-label">Next</span> Security-record migration</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="./" aria-current="page">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Configuration | SendBox docs</title>
+  <meta name="description" content="YAML examples, policy settings and credential configuration.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Configuration | SendBox docs">
+  <meta property="og:description" content="YAML examples, policy settings and credential configuration.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/configuration/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/configuration/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Configuration</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Get started</p>
+<h1 id="configuration">Configuration</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#example">Example</a></li>
+<li><a href="#network-grants">Network grants</a></li>
+<li><a href="#github-and-mcp-boundaries">GitHub and MCP boundaries</a></li>
+<li><a href="#copilot-credentials">Copilot credentials</a></li>
+<li><a href="#package-registry-credentials">Package registry credentials</a></li>
+<li><a href="#configuration-reference">Configuration reference</a></li>
+</ol>
+</nav>
+<p>SendBox is configured through YAML. Generate <code>.sendbox.yaml</code> in the project root
+and then edit it for the selected runtime and policy:</p>
+<pre tabindex="0"><code class="language-bash">sendbox init --project .
+sendbox init --project . --runtime kata
+sendbox policy validate --config .sendbox.yaml</code></pre>
+<p>The fully annotated reference is
+<a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/config/example-sandbox.yaml"><code>config/example-sandbox.yaml</code></a>.</p>
+<h2 id="example">Example</h2>
+<pre tabindex="0"><code class="language-yaml">name: my-agent-sandbox
+project_path: ./workspace
+
+runtime:
+  provider: auto # auto | apple | kata | hyperlight
+  kata:
+    executable: nerdctl
+    runtime_handler: io.containerd.kata.v2
+    namespace: sendbox
+  hyperlight:
+    kernel_path: /opt/hyperlight/shell-kernel
+    initrd_path: /opt/hyperlight/shell.cpio
+
+resources:
+  cpus: 2
+  memory_mb: 2048
+  disk_size_mb: 10240
+
+policy:
+  commands:
+    default_action: deny
+    allowlist:
+      - &quot;git *&quot;
+      - &quot;npm *&quot;
+      - &quot;python3 *&quot;
+    denylist:
+      - &quot;sudo *&quot;
+    log_blocked: true
+
+  network:
+    default_action: deny
+    allow_dns: true
+    # Replace wildcard entries with concrete hostnames when using Hyperlight.
+    allowed_domains:
+      - github.com
+      - &quot;*.github.com&quot;
+      - registry.npmjs.org
+    blocked_domains: []
+
+  packages:
+    enabled: true
+    registries:
+      - ecosystem: npm
+        url: https://registry.npmjs.org/
+        allow_insecure_http: false
+        signature: if_present
+        provenance: if_present
+    default_finding_action: deny
+    finding_actions:
+      - finding: lifecycle_script
+        action: deny
+    exceptions: []
+    limits:
+      max_report_bytes: 98304
+
+  boundaries:
+    # Set to false when using Hyperlight.
+    enabled: true
+    tool_calls:
+      max_frame_bytes: 1048576
+      servers:
+        filesystem:
+          transport: stdio
+          command:
+            - /usr/local/bin/node
+            - /usr/local/lib/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js
+            - /workspaces/my-project
+          tools:
+            default_action: deny
+            allowlist: [read_file, list_directory]
+            denylist: [&quot;write_*&quot;, &quot;delete_*&quot;]
+        github:
+          transport: stdio
+          command: [&quot;/usr/local/bin/github-mcp-server&quot;, &quot;stdio&quot;]
+          tools:
+            default_action: deny
+            allowlist: [search_code, get_file_contents]
+            denylist: [&quot;create_*&quot;, &quot;update_*&quot;, &quot;delete_*&quot;]
+        remote-docs:
+          transport: streamable_http
+          url: https://mcp.example.com/mcp
+          tools:
+            default_action: deny
+            allowlist: [search_docs, get_document]
+            denylist: [&quot;create_*&quot;, &quot;update_*&quot;, &quot;delete_*&quot;]
+          http:
+            allow_redirects: false
+            max_response_bytes: 1048576
+            request_timeout_seconds: 30
+            authorization:
+              bearer_secret: REMOTE_MCP_TOKEN
+    syscalls:
+      additional_denylist:
+        - io_uring_setup
+      log_blocked: true
+    log_path: /var/log/sendbox/boundary.log
+
+secrets:
+  - DATABASE_URL
+
+devcontainer:
+  auto_generate: true
+  extensions:
+    - github.copilot
+
+github:
+  forward_auth: true
+  forward_copilot_auth: true
+  allow_private_repository_access: false
+  branch_protection:
+    enabled: true
+    protected_branches: [main, master]
+    allowed_branch_patterns:
+      - &quot;{username}/*&quot;
+      - &quot;copilot/*&quot;
+      - &quot;feature/*&quot;
+  safe_outputs:
+    enabled: false
+    mode: staged
+    write_token_env: SENDBOX_SAFE_OUTPUTS_GITHUB_TOKEN
+
+observability:
+  mcp_inspection:
+    enabled: false
+    transports: [stdio]
+    capture_payloads: false
+    max_payload_bytes: 16384
+    log_path: /var/log/sendbox/mcp-trace.log</code></pre>
+<p>Rust-generated configuration uses deterministic snake_case YAML, validates
+before writing, is created atomically with mode <code>0600</code>, and refuses to overwrite
+an existing <code>.sendbox.yaml</code>. JSON results are deterministic. Invalid input or
+configuration returns <code>2</code>; analysis failures return <code>3</code>; write failures and
+no-overwrite refusals return <code>4</code>. Text diagnostics use stderr, while <code>--json</code>
+failures use stdout only.</p>
+<p>Workload output, runtime failure diagnostics, captured MCP credentials, and
+Safe Outputs human text are credential-masked by default, without a disable
+switch. Authentication traffic is not modified. See
+<a href="../cli-agents/#credential-masking">credential masking</a> for coverage and limits.</p>
+<h2 id="network-grants">Network grants</h2>
+<p>Apple and Kata enforce exact hostnames, explicit wildcard patterns, IPv4/IPv6
+network grants, and deny-first restrictions through DNS, HTTP CONNECT, SOCKS5,
+and the native CONNECT protocol:</p>
+<pre tabindex="0"><code class="language-yaml">policy:
+  network:
+    default_action: deny
+    allow_dns: true
+    allowed_domains: [github.com, &quot;*.tools.example&quot;]
+    blocked_domains: [blocked.tools.example]
+    blocked_networks: [&quot;203.0.113.9/32&quot;]</code></pre>
+<p><code>*.tools.example</code> matches <code>one.tools.example</code> and <code>nested.one.tools.example</code>,
+not the apex <code>tools.example</code>, <code>nottools.example</code>, or <code>tools.example.evil</code>.
+Add the apex separately when needed. Ordinary exact hosts remain exact; they
+do not implicitly grant subdomains. All CNAME hops must also be admitted.</p>
+<p><strong><code>github.com</code> is an explicit delegation to the official GitHub Meta feed</strong>, not
+an apex-only grant. The host fetches the fixed anonymous HTTPS endpoint
+<a href="https://api.github.com/meta">https://api.github.com/meta</a> into one cache shared by every session on the
+machine (<code>~/.sendbox/run/github-meta.json</code>). It reuses that response for up to
+an hour, then revalidates it with its ETag, so SendBox makes at most about one
+request per hour per machine. Each session's gateways receive the validated
+response before readiness and never contact GitHub themselves. Only an
+effective exact apex grant triggers this behavior:
+<code>api.github.com</code>, <code>*.github.com</code>, and permissive defaults alone do not.
+The reviewed network fields and domain/endpoint fields, including their
+published wildcard patterns, become additional grants. SSH keys, commit keys,
+fingerprints, and the artifact-attestation trust-domain identity are not
+destinations. Unknown fields, malformed entries, default routes, and oversized
+documents are rejected as a whole.</p>
+<p><strong>The feed includes shared-cloud CIDRs and wildcard services.</strong> This intentionally
+grants more than GitHub-owned web servers, including published Actions ranges.
+It is not unlimited Internet access, authentication, or approval to perform
+GitHub writes. Unlisted hostnames still fail a default-deny domain check even
+when their address falls in a published range; direct-IP TCP access to that
+range is allowed, subject to port and explicit-network restrictions.
+Explicit deny rules, private/link-local/metadata address protections, DNS
+budgets, reserved MCP origins, package-proxy isolation, and UDP/QUIC denial
+still apply. Published CIDRs never count as explicit private-address grants.</p>
+<p>GitHub allows 60 anonymous API requests per hour per IP address, shared with
+every other unauthenticated client behind that address. When a refresh fails,
+including a 403/429 rate limit, the host records the error and waits 60 seconds
+or until GitHub's published reset before retrying. Meanwhile it keeps using the
+previous validated response while at least 15 minutes remain of its 24-hour
+lifetime, and the session's network report shows <code>degraded</code> with the error.
+Without such a response, the session fails before launch with the typed error
+and the reset time. It never silently reverts to apex-only behavior.
+Derived grants expire 24 hours after the host's last successful fetch or
+conditional revalidation; configured exact hosts and explicit networks are
+unchanged. An explicit <code>api.github.com</code> deny, disabled DNS, or a TCP/443
+exclusion makes a <code>github.com</code>-enabled session fail with an invalid
+configuration error. Each request has a ten-second deadline, no redirects,
+environment proxy, or credentials. The cached copy is revalidated with the
+strict parser on every read, and a corrupt cache is discarded.</p>
+<p>A guest receives one validated response at boot and does not refresh it; guest
+executions are capped at 300 seconds. Already-open tunnels retain their
+existing maximum 300-second lifetime. A restart installs the same host-supplied
+response again and cannot reuse earlier DNS pins.</p>
+<p>With <code>sendbox run --json</code>, the final <code>network_report: {path, sha256}</code> references
+a private host-side <code>network-egress-report.json</code>, following the package-report
+artifact pattern instead of inflating every consumer's result frame. Its digest
+is recorded in the signed session provenance. The file contains each gateway's
+configured policy plus latest published
+scope, body SHA-256, ETag, source/API version, revision, attempt/success/expiry
+timestamps, freshness, and last failure. The scope is combined with the
+configured deny/address/port controls; it is not a standalone allow-all policy.
+The report captures the latest refresh attempt, not a complete transition
+history or proof that an expired lease is still live. It is available after a
+normal terminal response, not guaranteed after forced cancellation.
+<code>policy show --json</code> remains an offline view of configured rules and does not
+pretend to resolve this live scope.</p>
+<p>This requires a matching updated host and signed guest bundle. The boundary
+plan remains version 3, with a signed <code>network_github_meta</code> admission that
+binds the response's SHA-256; the internal egress runtime document is version
+5, the guest bootstrap is version 5, and <code>network.report</code> is independently
+versioned at 1. Older guest bundles are rejected, not silently accepted with
+narrower behavior. Hyperlight has no authenticated production
+Meta-refresh gateway. No release or consumer activation is implied by a source
+build.</p>
+<h2 id="github-and-mcp-boundaries">GitHub and MCP boundaries</h2>
+<p>GitHub repository forwarding currently supports <code>github.com</code>. Ordinary HTTPS
+Git uses a fixed authenticated askpass helper rather than assuming
+<code>GITHUB_TOKEN</code> is consumed automatically. <code>github.ssh_key_path</code> accepts an
+owner-only private-key file and routes Git SSH through a trusted wrapper with
+strict host-key checking; the guest image must provide trusted SSH host keys.</p>
+<p>Selected-repository <code>git push</code> and <code>git pull</code> operations are branch-protected by
+default. <code>main</code> and <code>master</code> are denied, while <code>{username}/*</code>, <code>copilot/*</code>, and
+<code>feature/*</code> are allowed. The username is auto-detected from <code>gh</code> or can be
+configured explicitly. This guard requires <code>policy.boundaries.enabled</code>; keep
+GitHub server-side branch protection enabled as defense in depth against direct
+API ref mutations or alternate Git clients. Disable
+<code>github.branch_protection.enabled</code> for non-Git projects.</p>
+<p>The native Rust admission engine is connected to persistent Apple and Kata
+<code>sendbox run</code> sessions through authenticated guest bootstrap. It does not
+replace hosting-provider rulesets or protect alternate clients and direct GitHub
+API calls.</p>
+<p>Local stdio MCP configuration must use
+<code>/run/sendbox-boundary/mcp-broker -- &lt;exact-approved-command&gt;</code>. Remote project
+definitions must use the deterministic
+<code>http://127.0.0.1:15082/mcp/&lt;server-id&gt;</code> route and the configured
+<code>streamable-http</code> or <code>streamable-http-2025</code> type; direct upstream URLs and
+project-supplied credentials are rejected. Stdio and HTTP share exact server
+resolution, deny-first tool policy, <code>tools/list</code> filtering, call-time checks,
+and a root-owned audit log. The gateway verifies TLS, revalidates DNS and
+redirect addresses, pins exact destinations, and keeps bearer credentials out
+of the agent environment. Legacy 2024 HTTP+SSE and Hyperlight MCP composition
+fail closed.</p>
+<p>Safe Outputs is disabled and staged by default. Enabling <code>github.safe_outputs</code>
+requires Apple or Kata, <code>policy.boundaries.enabled: true</code>,
+<code>github.forward_auth: false</code>, no SSH key forwarding, and exact repository and
+operation limits. The trusted guest installs
+<code>/run/sendbox-boundary/safe-outputs-mcp</code>; configure it behind the native broker.
+Apply mode reads <code>SENDBOX_SAFE_OUTPUTS_GITHUB_TOKEN</code> only after the guest,
+control channel, and secret resolver have been cleaned up. Asset uploads are not
+supported. A custom write-token name cannot reuse a forwarded Copilot token
+variable. See the <a href="../architecture/safe-outputs/">Safe Outputs architecture</a>.</p>
+<h2 id="copilot-credentials">Copilot credentials</h2>
+<p><code>github.forward_copilot_auth: true</code> forwards a Copilot credential independently
+of repository-scoped GitHub authentication. The host resolves it from the first
+variable that is set, in this order:</p>
+<div class="table-scroll" role="group" aria-label="Copilot credentials table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Host variable</th><th scope="col">Status</th></tr></thead>
+<tbody>
+<tr><td><code>COPILOT_GITHUB_TOKEN</code></td><td>Supported</td></tr>
+<tr><td><code>GITHUB_COPILOT_TOKEN</code></td><td>Legacy compatibility only</td></tr>
+</tbody>
+</table>
+</div>
+<p>Only an absent variable falls through to the next candidate; a variable that is
+set but empty is a hard error rather than a silent fallback.
+Repository-scoped credentials (<code>GH_TOKEN</code>, <code>GITHUB_TOKEN</code>) are never consulted
+for Copilot.</p>
+<p>Whichever host variable supplied the value, the guest receives it as
+<code>COPILOT_GITHUB_TOKEN</code>, the name current GitHub Copilot CLI releases read.
+Errors name the supported variables and never print a credential value.</p>
+<h2 id="package-registry-credentials">Package registry credentials</h2>
+<p><code>policy.packages.enabled: true</code> activates the npm-first proxy on Apple and Kata
+persistent guests. The current implementation requires exactly one npm
+registry. For private registries, set <code>registries[].credential_secret</code> to a
+SendBox vault reference. That reference must not also appear in top-level
+<code>secrets</code>: registry tokens are delivered only to the isolated trusted proxy and
+are never exposed to the workload.</p>
+<p>The proxy forces npm to its loopback endpoint, disables lifecycle scripts,
+denies direct workload access to the configured upstream, and withholds
+tarballs until verification and inspection allow them. See the
+<a href="../package-supply-chain/">package supply-chain proxy</a> for setup, policy,
+false-positive handling, reports, and future ecosystem adapter contracts.</p>
+<h2 id="configuration-reference">Configuration reference</h2>
+<p>See <a href="../cli-agents/">CLI agents</a> for agent-specific initialization, HTTP/SOCKS
+proxy environment, native MCP definitions, multi-repository scope, and bounded
+guest syscall tracing.</p>
+<div class="table-scroll" role="group" aria-label="Configuration reference table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Section</th><th scope="col">Key</th><th scope="col">Description</th></tr></thead>
+<tbody>
+<tr><td><code>name</code></td><td>string</td><td>Human-readable sandbox name</td></tr>
+<tr><td><code>project_path</code></td><td>string</td><td>Selected host project and initial guest cwd</td></tr>
+<tr><td><code>workspace_path</code></td><td>optional string</td><td>Explicit enclosing multi-repo mount root; otherwise only the project is shared</td></tr>
+<tr><td><code>runtime.provider</code></td><td>enum</td><td><code>auto</code>, <code>apple</code>, <code>kata</code>, or <code>hyperlight</code></td></tr>
+<tr><td><code>runtime.kata.runtime_handler</code></td><td>string</td><td>Supported Kata v2 handler; shared-kernel/unverified handlers are rejected</td></tr>
+<tr><td><code>runtime.kata.namespace</code></td><td>string</td><td>containerd namespace</td></tr>
+<tr><td><code>runtime.kata.configuration_path</code></td><td>string</td><td>Absolute Kata config path on the containerd host</td></tr>
+<tr><td><code>runtime.hyperlight.kernel_path</code></td><td>string</td><td>Hyperlight-compatible Unikraft shell kernel</td></tr>
+<tr><td><code>runtime.hyperlight.initrd_path</code></td><td>string</td><td>Rootfs CPIO containing the commands or MCP servers to run</td></tr>
+<tr><td><code>resources.cpus</code></td><td>int</td><td>Number of virtual CPUs</td></tr>
+<tr><td><code>resources.memory_mb</code></td><td>int</td><td>Memory allocation in MB</td></tr>
+<tr><td><code>resources.disk_size_mb</code></td><td>int</td><td>Requested writable-layer size</td></tr>
+<tr><td><code>policy.commands</code></td><td>object</td><td>Command allowlist/denylist policy</td></tr>
+<tr><td><code>policy.network</code></td><td>object</td><td>Outbound network policy</td></tr>
+<tr><td><code>policy.packages</code></td><td>object</td><td>npm proxy, verification, finding actions, limits, exceptions, and cache policy</td></tr>
+<tr><td><code>policy.packages.registries[].credential_secret</code></td><td>string</td><td>Vault reference isolated from workload secrets</td></tr>
+<tr><td><code>policy.packages.limits.max_report_bytes</code></td><td>int</td><td>Bounded package report size, up to 98304 bytes</td></tr>
+<tr><td><code>policy.boundaries.enabled</code></td><td>bool</td><td>Install fail-closed MCP and syscall boundaries</td></tr>
+<tr><td><code>policy.boundaries.tool_calls</code></td><td>object</td><td>Exact stdio/HTTP MCP servers with independent tool and transport policy</td></tr>
+<tr><td><code>policy.boundaries.tool_calls.servers.*.authorization</code></td><td>object</td><td>Explicit stdio environment-auth method and per-server secret references</td></tr>
+<tr><td><code>policy.boundaries.tool_calls.servers.*.http.allowed_auth_methods</code></td><td>list</td><td>Admitted HTTP auth methods: <code>none</code>, <code>bearer</code></td></tr>
+<tr><td><code>policy.boundaries.syscalls.additional_denylist</code></td><td>list</td><td>Extra syscall names blocked by seccomp</td></tr>
+<tr><td><code>secrets</code></td><td>list</td><td>Secret names injected at runtime</td></tr>
+<tr><td><code>credential_services</code></td><td>list</td><td>Brokered credential service ids from the active <a href="../architecture/governed-sessions/#brokered-credentials">governance profile</a>; rejected outside governed sessions</td></tr>
+<tr><td><code>devcontainer.auto_generate</code></td><td>bool</td><td>Generate a devcontainer spec</td></tr>
+<tr><td><code>github.forward_auth</code></td><td>bool</td><td>Forward guarded GitHub credentials for the selected repository</td></tr>
+<tr><td><code>github.forward_copilot_auth</code></td><td>bool</td><td>Forward Copilot authentication independently as <code>COPILOT_GITHUB_TOKEN</code></td></tr>
+<tr><td><code>github.allow_private_repository_access</code></td><td>bool</td><td>Permit additional same-organization private repositories</td></tr>
+<tr><td><code>github.ssh_key_path</code></td><td>string</td><td>Owner-only SSH private key used by the trusted Git SSH wrapper</td></tr>
+<tr><td><code>github.branch_protection.enabled</code></td><td>bool</td><td>Guard selected-repository pushes and pulls by branch</td></tr>
+<tr><td><code>github.branch_protection.username</code></td><td>string</td><td>Username used to expand <code>{username}</code> patterns; auto-detected by default</td></tr>
+<tr><td><code>github.branch_protection.protected_branches</code></td><td>list</td><td>Branch names that push and pull can never target</td></tr>
+<tr><td><code>github.branch_protection.allowed_branch_patterns</code></td><td>list</td><td>Glob patterns allowed for selected-repository push and pull</td></tr>
+<tr><td><code>github.safe_outputs</code></td><td>object</td><td>Credential-free, sealed GitHub write declarations; disabled and staged by default</td></tr>
+<tr><td><code>github.safe_outputs.mode</code></td><td>enum</td><td><code>staged</code> for preview-only or <code>apply</code> for host-only GitHub execution</td></tr>
+<tr><td><code>github.safe_outputs.write_token_env</code></td><td>string</td><td>Host-only environment variable read after runtime teardown</td></tr>
+<tr><td><code>github.safe_outputs.allowed_repositories</code></td><td>list</td><td>Exact <code>owner/repository</code> write targets</td></tr>
+<tr><td><code>observability.mcp_inspection.enabled</code></td><td>bool</td><td>Enable authenticated local stdio MCP observation on Apple or Kata</td></tr>
+<tr><td><code>observability.syscall_tracing</code></td><td>bool</td><td>Require cgroup-subtree guest observation and a verified redacted syscall report</td></tr>
+</tbody>
+</table>
+</div>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/configuration.md"><code>docs/configuration.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/configuration.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../installation/"><span class="pager-label">Previous</span> Installation</a>
+<a class="pager-next" href="../cli-reference/"><span class="pager-label">Next</span> CLI reference</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="./" aria-current="page">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

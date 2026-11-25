@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kata Containers | SendBox docs</title>
+  <meta name="description" content="The Linux runtime: Kata, containerd, nerdctl and KVM setup.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Kata Containers | SendBox docs">
+  <meta property="og:description" content="The Linux runtime: Kata, containerd, nerdctl and KVM setup.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/kata-containers/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/kata-containers/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Kata Containers</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Runtimes and operations</p>
+<h1 id="kata-containers-runtime">Kata Containers Runtime</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#authenticated-runtime-path">Authenticated runtime path</a></li>
+<li><a href="#requirements">Requirements</a></li>
+<li><a href="#configure-containerd">Configure containerd</a></li>
+<li><a href="#sendbox-configuration">SendBox configuration</a></li>
+<li><a href="#runtime-behavior">Runtime behavior</a></li>
+<li><a href="#secrets-on-linux">Secrets on Linux</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+</ol>
+</nav>
+<h2 id="authenticated-runtime-path">Authenticated runtime path</h2>
+<p>The production CLI exposes the authenticated runtime command:</p>
+<pre tabindex="0"><code class="language-bash">sendbox run \
+  --config /absolute/path/.sendbox.yaml \
+  --runtime kata \
+  --image registry.example/workload@sha256:&lt;digest&gt; \
+  --bundle /absolute/path/to/verified-bundle \
+  --trust-root /absolute/path/to/release-public.key \
+  --trust-root-id external-release-root \
+  --minimum-release-sequence 1 \
+  -- /usr/bin/printf '%s\n' hello</code></pre>
+<p>The command after <code>--</code> is an exact argv vector. The guest executable and working
+directory must be absolute; no shell parses or joins the arguments. <code>--json</code>
+emits deterministic <code>output</code>, <code>result</code>, and <code>error</code> records. Binary output is
+hex encoded. The process exit code is propagated when broker cleanup is
+complete; cancellation uses 130.</p>
+<p>The workload image must be digest-pinned. The bundle and trust-root paths are
+host paths, and the project path in the configuration must be absolute and
+owned by a non-root uid/gid. The bundle must contain the signed static
+<code>bin/sendbox-guest</code> and <code>bin/sendbox-exec-launcher</code> artifacts produced by
+<code>packaging/guest/Dockerfile</code>.</p>
+<p>Before image pull or VM launch, the command resolves one immutable signed
+boundary plan. Configured secrets, repository-scoped GitHub/Copilot/SSH
+credentials, the native Git guard, authenticated MCP stdio inspection, and
+restrictive DNS/egress policy are composed into authenticated guest bootstrap.
+Restrictive egress binds the execution broker to the delegated
+<code>/sys/fs/cgroup/sendbox/&lt;instance&gt;/agent</code> hierarchy and starts Exec only after
+the guest DNS/SOCKS5 gateway is ready.</p>
+<p>SendBox can run sandboxes on Linux through <a href="https://katacontainers.io/">Kata Containers</a>, using <code>nerdctl</code> to create each workload with the Kata containerd shim. The agent runs in a dedicated hardware-virtualized guest rather than sharing the host kernel.</p>
+<h2 id="requirements">Requirements</h2>
+<ul>
+<li>Linux on bare metal or a VM with nested virtualization</li>
+<li>Rust 1.93.1</li>
+<li>Kata Containers 3.28 or newer</li>
+<li>containerd 1.7 or newer</li>
+<li>CNI plugins</li>
+<li>nerdctl</li>
+<li>Access to <code>/dev/kvm</code> and the containerd socket</li>
+</ul>
+<p>Verify the host before running SendBox:</p>
+<pre tabindex="0"><code class="language-bash">kata-runtime check
+nerdctl info
+nerdctl run --rm --runtime io.containerd.kata.v2 \
+  docker.io/library/busybox:latest uname -a</code></pre>
+<p>Do not run SendBox with <code>sudo</code> merely to reach containerd. Grant the user access to the containerd socket or configure a rootless containerd installation with access to the host virtualization device.</p>
+<h2 id="configure-containerd">Configure containerd</h2>
+<p>Register the Kata shim as a containerd runtime. For containerd 2.x:</p>
+<pre tabindex="0"><code class="language-toml">version = 3
+
+[plugins.&quot;io.containerd.cri.v1.runtime&quot;.containerd.runtimes.kata]
+  runtime_type = &quot;io.containerd.kata.v2&quot;
+  privileged_without_host_devices = true</code></pre>
+<p>For containerd 1.7:</p>
+<pre tabindex="0"><code class="language-toml">version = 2
+
+[plugins.&quot;io.containerd.grpc.v1.cri&quot;.containerd.runtimes.kata]
+  runtime_type = &quot;io.containerd.kata.v2&quot;
+  privileged_without_host_devices = true</code></pre>
+<p>Restart containerd after changing its configuration. The default SendBox handler is the shim runtime type <code>io.containerd.kata.v2</code>; custom shims such as <code>io.containerd.kata-qemu.v2</code> are also supported.</p>
+<h2 id="sendbox-configuration">SendBox configuration</h2>
+<pre tabindex="0"><code class="language-yaml">runtime:
+  provider: kata
+  kata:
+    executable: nerdctl
+    runtime_handler: io.containerd.kata.v2
+    namespace: sendbox
+    # address: /run/containerd/containerd.sock
+    # snapshotter: overlayfs
+    # configuration_path: /etc/kata-containers/configuration.toml</code></pre>
+<p>Use the explicit runtime and all trust inputs shown above:</p>
+<pre tabindex="0"><code class="language-bash">sendbox run --config .sendbox.yaml --runtime kata \
+  --image &quot;$IMAGE_DIGEST&quot; --bundle &quot;$BUNDLE&quot; --trust-root &quot;$TRUST_ROOT&quot; \
+  -- /usr/bin/true</code></pre>
+<p><code>runtime.provider: auto</code> selects Apple Containerization on supported macOS hosts and Kata Containers on Linux.</p>
+<h3 id="kata-options">Kata options</h3>
+<div class="table-scroll" role="group" aria-label="Kata options table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Key</th><th scope="col">Default</th><th scope="col">Description</th></tr></thead>
+<tbody>
+<tr><td><code>executable</code></td><td><code>nerdctl</code></td><td>nerdctl executable name or absolute path</td></tr>
+<tr><td><code>runtime_handler</code></td><td><code>io.containerd.kata.v2</code></td><td>containerd runtime v2 handler</td></tr>
+<tr><td><code>namespace</code></td><td><code>sendbox</code></td><td>containerd namespace used for SendBox containers</td></tr>
+<tr><td><code>address</code></td><td>nerdctl default</td><td>containerd socket address</td></tr>
+<tr><td><code>snapshotter</code></td><td>nerdctl default</td><td>containerd snapshotter</td></tr>
+<tr><td><code>configuration_path</code></td><td>Kata default</td><td>Absolute Kata configuration path on the containerd host</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>configuration_path</code> is passed as the supported <code>io.katacontainers.config_path</code> OCI annotation. The file must exist on the containerd host and be readable by the Kata shim.</p>
+<h2 id="runtime-behavior">Runtime behavior</h2>
+<ul>
+<li>Kata and Apple encode the same typed inner guest-bootstrap document. Kata wraps
+that document with its provider-specific trust-root injection envelope before
+delivering both files to the VM.</li>
+<li>CPU, memory, hostname, DNS, working directory, image, command, and bind mounts map to <code>nerdctl run</code>.</li>
+<li><code>disk_size_mb</code> is delegated to the configured containerd snapshotter because nerdctl does not expose a portable per-container writable-layer quota.</li>
+<li>Single-line environment values are written to a mode <code>0600</code> temporary env file, passed with <code>--env-file</code>, and deleted immediately after container creation. Multi-line values are inherited by key through the nerdctl client environment, so secret values never appear in argv.</li>
+<li>SendBox adds <code>NET_ADMIN</code> only when the configured firewall script needs it.</li>
+<li>eBPF MCP inspection adds <code>BPF</code>, <code>PERFMON</code>, and <code>SYS_PTRACE</code>; the guest kernel must expose BTF and the image must support <code>bpftrace</code>.</li>
+<li>Firewall and MCP startup scripts remain best-effort and log explicit failures.</li>
+<li>Boundary mode runs the trusted bootstrap with the Kata VM's PID namespace,
+temporarily adds the BPF/sysctl capabilities it needs, and disables the outer
+container seccomp profile. SendBox then waits for the boundary readiness
+marker; the generated inner seccomp launcher and non-root UID constrain the
+agent and every later <code>nerdctl exec</code>.</li>
+</ul>
+<h2 id="secrets-on-linux">Secrets on Linux</h2>
+<p>The <code>sendbox secrets</code> commands use a file-backed store under <code>~/.sendbox/secrets</code>. Directories are mode <code>0700</code>, secret files are mode <code>0600</code>, and filenames are encoded so secret names cannot escape the store. Proxy credential mode currently requires Apple's Network framework; use environment credential injection on Linux.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong><code>permission denied</code> from <code>nerdctl info</code></strong></p>
+<p>Configure access to the containerd socket or a rootless containerd service. Also verify access to <code>/dev/kvm</code>.</p>
+<p><strong><code>failed to create shim task</code> or runtime not found</strong></p>
+<p>Confirm <code>containerd-shim-kata-v2</code> is installed in containerd's executable path and that <code>runtime_handler</code> matches the installed shim.</p>
+<p><strong>No network in the guest</strong></p>
+<p>Install CNI plugins and verify nerdctl can run a normal container with the default bridge network before testing Kata.</p>
+<p><strong>Custom Kata configuration is ignored</strong></p>
+<p>Use an absolute <code>configuration_path</code> that exists on the containerd host. Check the Kata shim logs with:</p>
+<pre tabindex="0"><code class="language-bash">journalctl -t kata</code></pre>
+<p>Hosted GitHub Actions runners do not expose nested virtualization. Normal CI
+compiles Linux and runs the fake-nerdctl/authenticated-channel conformance tests.
+Live qualification is a separate required self-hosted gate:</p>
+<pre tabindex="0"><code class="language-bash">cargo build --workspace --release
+SENDBOX_KATA_LIVE=1 \
+SENDBOX_KATA_CONFIG=/absolute/path/.sendbox.yaml \
+SENDBOX_KATA_IMAGE=registry.example/workload@sha256:&lt;digest&gt; \
+SENDBOX_KATA_BUNDLE=/absolute/path/to/bundle \
+SENDBOX_KATA_TRUST_ROOT=/absolute/path/to/release-public.key \
+./scripts/qualify-kata-live.sh</code></pre>
+<p>The script fails when any input, KVM, containerd, Kata, readiness, brokered
+execution, exit propagation, or cleanup proof is missing. It never reports a
+successful skip.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/kata-containers.md"><code>docs/kata-containers.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/kata-containers.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../apple-runtime/"><span class="pager-label">Previous</span> Apple runtime</a>
+<a class="pager-next" href="../hyperlight/"><span class="pager-label">Next</span> Hyperlight</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="./" aria-current="page">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

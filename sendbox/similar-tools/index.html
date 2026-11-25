@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Similar tools | SendBox docs</title>
+  <meta name="description" content="SendBox compared with other agent sandboxes and dev containers.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Similar tools | SendBox docs">
+  <meta property="og:description" content="SendBox compared with other agent sandboxes and dev containers.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/similar-tools/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/similar-tools/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Similar tools</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Get started</p>
+<h1 id="choosing-an-agent-sandbox">Choosing an agent sandbox</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#options-and-tradeoffs">Options and tradeoffs</a></li>
+<li><a href="#distinctive-sendbox-built-ins">Distinctive SendBox built-ins</a></li>
+<li><a href="#when-sendbox-is-a-good-fit">When SendBox is a good fit</a></li>
+<li><a href="#questions-to-ask-before-choosing">Questions to ask before choosing</a></li>
+<li><a href="#sources">Sources</a></li>
+</ol>
+</nav>
+<p>The right sandbox depends on what you need to isolate and who should operate
+it. A reproducible development environment, an interactive agent session, and
+an API that executes code for many users solve related but different problems.</p>
+<p>SendBox focuses on <strong>CLI agent sessions on a Mac or Linux host you control</strong>,
+with a VM boundary and a reviewable policy for workspace access, entry commands,
+network destinations, credentials, and MCP tools.</p>
+<h2 id="options-and-tradeoffs">Options and tradeoffs</h2>
+<div class="table-scroll" role="group" aria-label="Options and tradeoffs table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Option</th><th scope="col">Deployment and isolation model</th><th scope="col">Good fit</th><th scope="col">What to evaluate</th></tr></thead>
+<tbody>
+<tr><td><strong><a href="https://github.com/agent-substrate/substrate">Agent Substrate</a></strong></td><td>Kubernetes runtime with gVisor or Cloud Hypervisor microVM backends. Actors are stateful workloads multiplexed across worker pools.</td><td>Stateful agent fleets, full-state suspend/resume, per-actor identity, and credential injection outside the actor.</td><td>You operate Kubernetes and its control plane. gVisor's userspace kernel and a microVM's dedicated guest kernel are different isolation mechanisms. The project is pre-1.0.</td></tr>
+<tr><td><strong><a href="https://edu.chainguard.dev/chainguard/workspaces/overview/">Chainguard Workspaces</a></strong></td><td>Remote Linux microVM sessions in Chainguard's cloud, accessed with <code>chainctl develop</code>. A local directory is synced, not mounted from the host.</td><td>Keeping a terminal workflow while offloading compute, keeping long-lived credentials outside the VM, and parking/resuming the full session.</td><td>Currently beta/Technology Preview. Default sessions have public internet access; an egress allowlist requires opening on an appropriately configured check. Service limits and data-use terms apply.</td></tr>
+<tr><td><strong><a href="https://docs.docker.com/ai/sandboxes/">Docker Sandboxes</a></strong></td><td>Local sandboxes use a microVM with a dedicated Linux kernel. Docker also offers cloud sandboxes with separate behavior and lifecycle controls.</td><td>An agent-focused sandbox product, including workflows that need a Docker Engine inside the local sandbox.</td><td>Compare local versus cloud support, workspace modes, credential handling, network defaults, and where MCP servers execute.</td></tr>
+<tr><td><strong><a href="https://docs.e2b.dev/">E2B</a></strong></td><td>API/SDK-driven cloud Linux VMs, with a separately documented self-hosting path.</td><td>Building applications that provision environments, execute agent-generated code, and pause/resume full sandbox state programmatically.</td><td>Hosted versus self-hosted operations, environment lifecycle and limits, data placement, network controls, and how to connect your agent tooling.</td></tr>
+<tr><td><strong><a href="https://www.daytona.io/docs/en/sandboxes/">Daytona</a></strong></td><td>An API-first remote sandbox platform. Current documentation distinguishes default Linux container sandboxes from Linux/Windows VM sandboxes and other classes.</td><td>Programmatically managing environments with SDKs, process/filesystem APIs, snapshots, and remote-access tooling.</td><td>Select the actual sandbox class and deployment before comparing isolation or lifecycle guarantees. VM-specific capabilities are not universal container-sandbox capabilities.</td></tr>
+<tr><td><strong><a href="https://github.com/superradcompany/microsandbox">microsandbox</a></strong></td><td>Local hardware-isolated microVMs on Apple-silicon macOS, KVM-enabled Linux, and WHP-enabled Windows. Supports OCI images and CLI/SDK use.</td><td>Embedding sandbox execution into an application, local shell workflows, and forking or snapshotting running sandboxes.</td><td>Beta software with changing APIs. Compare the controls provided by the runtime with the agent policies and integrations your application would need to supply.</td></tr>
+<tr><td><strong><a href="https://containers.dev/overview">Dev containers</a></strong></td><td>A development-environment specification used by local and remote tools. Isolation depends on the backing container/VM runtime and configured mounts.</td><td>Sharing reproducible dependencies, editor settings, and development setup across a team.</td><td>The specification alone does not provide a per-agent VM or enforce SendBox-style command, network, credential, or MCP policy.</td></tr>
+<tr><td><strong>SendBox</strong></td><td>Self-managed macOS/Linux hosts. Apple and Kata sessions have a dedicated Linux guest kernel; Hyperlight is a separate one-shot path.</td><td>Switching between CLI agents while retaining explicit session controls, scoped integrations, snapshots, and audit records.</td><td>You supply virtualization-capable hosts, a tooling image, verified guest artifacts, and operational setup. No hosted service, Windows runtime, or fleet scheduler.</td></tr>
+</tbody>
+</table>
+</div>
+<p>These are workflow comparisons, <strong>not a security ranking or a feature-parity
+claim</strong>. Local and hosted variants can have different boundaries. Product
+capabilities change; verify the current documentation for your chosen
+deployment rather than relying on a product name alone.</p>
+<h2 id="distinctive-sendbox-built-ins">Distinctive SendBox built-ins</h2>
+<p>These two workflows distinguish SendBox's integrated CLI stack in the reviewed
+sources. This is a comparison of documented built-ins, not proof that another
+project cannot provide equivalent behavior. An undocumented capability is
+<strong>unknown</strong>, not unsupported.</p>
+<div class="table-scroll" role="group" aria-label="Distinctive SendBox built-ins table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Workflow</th><th scope="col">What SendBox implements</th><th scope="col">Related capabilities and limits</th></tr></thead>
+<tbody>
+<tr><td><strong>Pre-delivery npm package gate</strong></td><td>A trusted registry proxy quarantines tarballs, verifies package identity and integrity, enforces configured signature/provenance requirements, and inspects archive content without executing package code. Only an <code>allow</code> verdict releases bytes to the workload. Exceptions bind to an exact artifact digest.</td><td>The reviewed alternative sources do not establish an equivalent built-in tarball pipeline. Chainguard's product page advertises lockfile verification; that should not be equated with SendBox's static archive inspection. Generic registry access controls or installing a scanner inside a sandbox are also different boundaries.</td></tr>
+<tr><td><strong>Post-session GitHub Safe Outputs</strong></td><td>A native partial-conformance gateway records bounded GitHub requests with session/policy provenance. After guest teardown, the host verifies the batch and either persists a preview or applies permitted writes with a host-only token.</td><td>This is an integration of the GitHub Agentic Workflows design, not an invention of SendBox. Docker Sandboxes is also a supported runtime for GitHub Agentic Workflows, where a separate Safe Outputs job performs writes. That is a documented alternative when CI orchestration, rather than a local CLI integration, fits your workflow.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Both controls are disabled by default and supported on Apple/Kata persistent
+sessions only. Package inspection is npm-only; other package adapters are not
+implemented. Signature/provenance checks default to verifying evidence when
+present; use <code>required</code> to reject its absence. Static inspection is not proof
+that a package is safe. See the <a href="../package-supply-chain/">package guide</a>.</p>
+<p>Safe Outputs defaults to staged mode when enabled and supports only a subset
+of GitHub.com operations. Apply mode prevalidates the batch but performs remote
+writes sequentially, so a later API failure can leave earlier writes applied.
+See the <a href="../architecture/safe-outputs/">gateway architecture and limitations</a>.</p>
+<p>VM isolation, network policies, external credential injection, MCP support,
+snapshots, and audit records are not claimed as SendBox-only features. Agent
+Substrate, Chainguard, Docker, and other tools provide overlapping controls.
+Some alternatives also offer capabilities SendBox does not: cluster scheduling,
+managed compute, durable full-VM resume, Windows environments, or an embedded
+sandbox SDK.</p>
+<h2 id="when-sendbox-is-a-good-fit">When SendBox is a good fit</h2>
+<p>Choose SendBox when you want to keep using terminal agents on infrastructure
+you manage, avoid granting them broad access to your host environment, and
+review their permissions in one configuration.</p>
+<p>It is especially relevant when you need the combination of a VM boundary,
+explicit model-provider egress, per-server MCP tool rules, registry inspection,
+and GitHub workflows without tying the session to one coding agent.</p>
+<p>Choose a different approach when your primary need is a managed execution API,
+large-scale environment scheduling, or simply a shared development setup. A
+cloud sandbox platform can own more infrastructure for you; a devcontainer may
+be sufficient when reproducibility, rather than containing untrusted code, is
+the main goal.</p>
+<h2 id="questions-to-ask-before-choosing">Questions to ask before choosing</h2>
+<ol>
+<li><strong>What is outside the boundary?</strong> Does the workload share a kernel with the
+host or other workloads? Which host files, runtime sockets, and MCP servers
+remain reachable?</li>
+<li><strong>What can leave the environment?</strong> Are outbound destinations restricted,
+and what happens when an agent or plugin ignores proxy settings?</li>
+<li><strong>Where do credentials live?</strong> Can the agent read them, or does a trusted
+service inject them only for approved upstream requests?</li>
+<li><strong>How do changes reach your repository?</strong> Is the workspace shared read/write,
+copied, or synchronized? What must you review before running changed files?</li>
+<li><strong>What does failure look like?</strong> Do missing controls stop execution? What
+evidence, cleanup, and rollback are available?</li>
+<li><strong>Who operates it?</strong> Who patches the runtime, verifies artifacts, provisions
+compute, and handles concurrency and tenant separation?</li>
+</ol>
+<p>For SendBox, the shared workspace is writable, workload secrets are accessible
+to the workload, and command policy does not recursively authorize descendant
+argv. See <a href="../overview/#limitations-and-security-expectations">security expectations</a> and the
+<a href="../security-model/">security model</a> before treating any control as a guarantee.</p>
+<h2 id="sources">Sources</h2>
+<p>The comparison was reviewed against these official sources on October 29, 2026.
+It is a documentation review, not a head-to-head benchmark or an exhaustive
+audit of every deployment and integration:</p>
+<ul>
+<li><a href="https://github.com/agent-substrate/substrate/blob/eaf0e85c7622d021d833c13e8f8911e2854f9794/README.md">Agent Substrate README at the reviewed revision</a>,
+including its backends, credential model, actor snapshots, and pre-1.0 status.</li>
+<li><a href="https://edu.chainguard.dev/chainguard/workspaces/overview/">Chainguard Workspaces overview</a>,
+<a href="https://edu.chainguard.dev/chainguard/workspaces/session-environment/">session environment and network defaults</a>,
+and <a href="https://edu.chainguard.dev/get-started/checks-and-workspaces/how-it-works/">Checks/Workspaces security model</a>.
+Prefer these operational docs over assuming that every feature advertised on
+the <a href="https://www.chainguard.dev/products/workspaces">product page</a> applies to
+every session configuration.</li>
+<li><a href="https://docs.docker.com/ai/sandboxes/">Docker Sandboxes overview</a> and
+<a href="https://docs.docker.com/ai/sandboxes/security/isolation/">local isolation layers</a>,
+including direct-mount and clone workspaces. Docker's
+<a href="https://www.docker.com/blog/running-ai-agents-in-github-actions-with-docker-sandboxes/">GitHub Actions integration walkthrough</a>
+demonstrates Safe Outputs supplied by GitHub Agentic Workflows.</li>
+<li><a href="https://docs.e2b.dev/">E2B overview</a>,
+<a href="https://docs.e2b.dev/sandbox">sandbox lifecycle</a>, and
+<a href="https://github.com/e2b-dev/E2B#self-hosting">project self-hosting section</a>.</li>
+<li><a href="https://www.daytona.io/docs/en/sandboxes/">Daytona sandbox classes and lifecycle</a>.</li>
+<li><a href="https://github.com/superradcompany/microsandbox/blob/8ff916f38a628390fff21e26339495272f20d782/README.md">microsandbox README at the reviewed revision</a>,
+including CLI/SDK use, platform requirements, snapshots, and beta status.</li>
+<li><a href="https://containers.dev/overview">Dev Container Specification overview</a>.</li>
+<li>SendBox's <a href="../security-model/">runtime security model</a>,
+<a href="../package-supply-chain/">package delivery pipeline</a>, and
+<a href="../architecture/safe-outputs/">Safe Outputs implementation</a>. The gateway
+documents its partial conformance to the upstream
+<a href="https://github.github.com/gh-aw/specs/safe-outputs-specification/">Safe Outputs specification</a>.</li>
+</ul>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/alternatives.md"><code>docs/alternatives.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/alternatives.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../integrations/"><span class="pager-label">Previous</span> Integrations</a>
+<a class="pager-next" href="../apple-runtime/"><span class="pager-label">Next</span> Apple runtime</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="./" aria-current="page">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>
