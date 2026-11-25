@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cold-start DNS diagnostics | SendBox docs</title>
+  <meta name="description" content="A credential-free diagnostic for first-request networking failures.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Cold-start DNS diagnostics | SendBox docs">
+  <meta property="og:description" content="A credential-free diagnostic for first-request networking failures.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/dns-cold-start/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/dns-cold-start/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Cold-start DNS diagnostics</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Runtimes and operations</p>
+<h1 id="cold-start-dns-diagnostics">Cold-start DNS diagnostics</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#what-the-evidence-establishes">What the evidence establishes</a></li>
+<li><a href="#bounded-mitigation">Bounded mitigation</a></li>
+<li><a href="#meta-startup-follow-up">Meta startup follow-up</a></li>
+<li><a href="#historical-qualification-results">Historical qualification results</a></li>
+<li><a href="#build-the-standalone-fixture">Build the standalone fixture</a></li>
+<li><a href="#direct-upstream-diagnostic">Direct-upstream diagnostic</a></li>
+<li><a href="#regression-checks">Regression checks</a></li>
+</ol>
+</nav>
+<p>This diagnostic measures the first application request in each new Apple VM.
+It contains no agent loop, personal credentials, application retry, preceding
+lookup, cache priming, or startup sleep. A later successful request is not a
+replacement for the first result.</p>
+<h2 id="what-the-evidence-establishes">What the evidence establishes</h2>
+<p>On 2026-10-20, the installed macOS host and signed aarch64 guest were compared
+with the checksum- and GitHub-attestation-verified official 0.2.1 archive:</p>
+<div class="table-scroll" role="group" aria-label="What the evidence establishes table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Artifact</th><th scope="col">SHA-256</th></tr></thead>
+<tbody>
+<tr><td>Host</td><td><code>0dd8dde709673a4eb5dd890091ec190a1c2b53b4237c6271a2fe23621fc5d9f2</code></td></tr>
+<tr><td>Guest</td><td><code>5d0fc5c65d042f2b04922eeb7c7a85039fb839adb7d197c8440fd5ab40ca8f21</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Both the Apple CLI and service reported 0.10.0, commit <code>6bdb647</code>. The guest
+manifest required host/guest 0.2.1, architecture aarch64 and release sequence 5.</p>
+<p>The original missing-first-reply symptom <strong>did not recur in 20 sequential
+released-guest VMs</strong>. Every first request reached the API over verified TLS and
+received the expected credential-free HTTP 400. This is transport evidence,
+not authenticated model access, and not proof that the reported transient has
+been resolved.</p>
+<p>Header-only captures reconfirmed the selected upstream as <code>192.168.64.1:53</code>,
+not an assumed historical value. Additional fresh released-guest captures saw
+both initial A/AAAA queries leave the guest and matching replies return:
+matching IDs, question types, source address and source port. The observed
+canonical name was <code>glb-db52c2cf8be544.github.com</code>. A separate fresh, non-root,
+direct-upstream diagnostic received its first A/AAAA replies in approximately
+2.3/23.6 ms.</p>
+<p>These observations establish that this path was healthy during those runs.
+They do <strong>not</strong> establish an Apple bridge, host DNS proxy, or upstream resolver
+defect. Guest-only capture cannot distinguish those external boundaries when
+no reply arrives. Do not flush host caches, change the selected resolver, or
+restart unrelated services to manufacture a different result.</p>
+<p>The deterministic failure boundary is in SendBox's loss handling:</p>
+<ol>
+<li>Released forwarding sends one UDP datagram per QTYPE.</li>
+<li>If that query or reply is lost, the resolver times out after three seconds.
+TCP is attempted only after a validated truncated UDP response, not after
+silence.</li>
+<li>A and AAAA run concurrently, but an error in either fails the combined
+resolution. A completed A result alone cannot authorize a connection.</li>
+<li>An empty authorization cache therefore produces SOCKS REP <code>0x04</code> or HTTP
+CONNECT 502. No address is cached on that failed resolution.</li>
+<li>A later request performs another resolution and may succeed. That outcome
+does not repair the first request or identify where a packet was lost.</li>
+</ol>
+<p>A generated UDP fixture that discards the first datagram reproduced this
+failure before the change. The corrected resolver passes the same fixture.
+This establishes a SendBox resilience defect consistent with the reported
+missing-reply evidence; it does not identify the cause of the original live
+packet loss.</p>
+<h2 id="bounded-mitigation">Bounded mitigation</h2>
+<p>Each A/AAAA query now has one absolute three-second budget covering socket
+setup, UDP transmission/receive and TCP recovery.
+If the first UDP reply is still missing halfway through that budget, the same
+question and ID are sent <strong>once</strong> on the same connected, marked socket to the
+same selected upstream. Neither the deadline nor the application request is
+restarted. TCP recovery starts once at that same halfway boundary if UDP is
+still pending, against the same selected numeric upstream and port with the
+same question/ID and socket mark. UDP remains live until completion, cancellation
+or the original deadline. A TCP transport failure does not discard a later
+valid UDP reply. Validated UDP truncation still starts TCP immediately.
+The brokers retain their independent five-second resolution bound.</p>
+<p>There is no new public resolver, readiness lookup, sleep, background warm-up,
+unsandboxed fallback, or hostname/CNAME/IP grant. Permanent DNS errors, malformed
+responses and policy denials are not retried. Both completed family results
+still undergo the existing CNAME agreement, address-class, QTYPE, budget and
+authorization checks. A TCP response that is still truncated is rejected.</p>
+<p>UDP retransmission mitigates a single missing exchange; the same-upstream TCP
+path can also recover persistent UDP silence when that resolver supports TCP.
+Unavailable transports still fail closed at the original deadline.
+Gateway readiness continues to mean that authenticated local services and
+mandatory controls are ready, not that an external DNS server has been probed.</p>
+<p>DNS failures produce typed audit metadata with the failure kind, QTYPE,
+selected numeric upstream, transport, operation and OS code when available.
+Broker-deadline expiry is distinguished from resolver exchange timeout.
+HTTP DNS failures remain 502, with <code>Proxy-Status: sendbox; error=dns_error</code> and
+a bounded JSON diagnostic. Free-form resolver messages, DNS packet contents,
+credentials, bootstrap files and gateway control tokens are never included.
+SOCKS and native CONNECT reply codes remain compatible.</p>
+<h2 id="meta-startup-follow-up">Meta startup follow-up</h2>
+<p>A credential-free, zero-model startup using the official 0.2.4 guest reproduced
+an egress service exit before its ready socket. An independently instrumented
+host kept the signed guest unchanged and authenticated each generated
+root/image/command/plan before observation. Both initial A/AAAA UDP requests
+for the fixed public Meta endpoint and their same-ID retransmissions sent
+successfully, but the failed case received no reply within three seconds.
+Meta published <code>unavailable</code> with no active grants, the gateway exited, its
+parent observed control EOF, and the outer caller eventually reported guest
+readiness timeout. A successful case received both validated family replies
+after retransmission. All observed cgroup controller writes succeeded.</p>
+<p>That establishes a missing-UDP-reply boundary, not the location of packet loss
+outside the guest. The selected upstream's TCP DNS returned a validated answer
+in 2.36 ms in a separate fresh generated VM. No alternate resolver, cache flush,
+application replay, credential forwarding or personal runtime restart was used.</p>
+<p>The new generated regression first fails because no TCP connection is admitted
+after UDP silence, then passes with same-question recovery within the unchanged
+budget. Coverage also checks both families, strict TCP response validation,
+an incomplete TCP body at the original deadline, simultaneous-transport
+cancellation, no recovery after completed UDP, and preservation of a late UDP
+answer after a failed TCP attempt. Existing policy/CNAME/address and partial-
+family refusal tests remain in place.</p>
+<p>These are source and primitive observations. A changed signed guest and its
+complete native/application integration still need their own qualification;
+the official 0.2.4 guest bytes have not acquired this behavior merely because
+the source tests pass. Historical results below remain distinct.</p>
+<p>With pinned Rust 1.93.1, the complete local workspace reports 936 passing tests,
+two explicitly ignored environment-gated cases (live Meta HTTPS and interactive
+signing/Keychain ACL) and no failures. All ten locked fuzz
+workspaces, formatting, deny-warning Clippy and the release workspace build
+pass. A fresh strict JSON audit reports zero vulnerabilities and no warnings
+against 1,409 advisories. An earlier audit's registry/yank lookup timed out
+despite exit zero; it remains incomplete, not the successful audit receipt.
+Guest artifact CI now includes egress changes in its transitive input filter.
+No new dependency, public policy grant, schema or protocol is introduced.</p>
+<h2 id="historical-qualification-results">Historical qualification results</h2>
+<p>The official 0.2.1 host was also used with a separately signed development
+guest built from this change. The test trust root was
+<code>dns-cold-test-b5f8686b</code>, release sequence 6, with matching host/guest version
+0.2.1. The guest SHA-256 was
+<code>681105e407d4625d2e19698340c138acd853cc174f346df8afd747cbc0c255f9</code>.
+The unchanged signed-release launcher and BPF object were reused; both
+executables passed static ELF verification. The temporary signing seed was
+destroyed, and the official installed bundle/key were not replaced.</p>
+<p>Each cohort below used sequential, unique-boot VMs. Within each VM there was
+no preceding DNS lookup, warm-up, or application retry. Shared host/upstream
+caches were not flushed or claimed to be empty. First-request time runs from
+opening the loopback proxy through receipt of the unauthenticated API response headers,
+including CONNECT and verified TLS; VM boot/cleanup and response bodies are
+excluded.</p>
+<div class="table-scroll" role="group" aria-label="Historical qualification results table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Guest</th><th scope="col" class="align-right">Fresh VMs</th><th scope="col" class="align-right">First failures</th><th scope="col" class="align-right">Median ms</th><th scope="col" class="align-right">p95 ms</th><th scope="col" class="align-right">Maximum ms</th></tr></thead>
+<tbody>
+<tr><td>Official 0.2.1, no injected loss</td><td class="align-right">20</td><td class="align-right">0</td><td class="align-right">596.795</td><td class="align-right">706.852</td><td class="align-right">732.704</td></tr>
+<tr><td>Patched test guest, no injected loss</td><td class="align-right">20</td><td class="align-right">0</td><td class="align-right">566.914</td><td class="align-right">675.600</td><td class="align-right">2136.019</td></tr>
+</tbody>
+</table>
+</div>
+<p>All first responses were HTTP 400 after successful SOCKS/HTTP CONNECT and TLS.
+Both cohorts passed 40/40 deny checks. Every measured workload was non-root,
+with <code>NoNewPrivs=1</code>, <code>Seccomp=2</code>, and zero effective/permitted/ambient
+capabilities. Every cohort reported zero owned VMs remaining, also confirmed
+by the final scoped container listing.</p>
+<p>The patched per-VM results, including the slowest sample without discarding it:</p>
+<div class="table-scroll" role="group" aria-label="Historical qualification results table" tabindex="0">
+<table>
+<thead><tr><th scope="col" class="align-right">VM</th><th scope="col">Front end</th><th scope="col" class="align-right">CONNECT ms</th><th scope="col" class="align-right">First request ms</th><th scope="col">Result</th></tr></thead>
+<tbody>
+<tr><td class="align-right">1</td><td>SOCKS</td><td class="align-right">123.389</td><td class="align-right">549.224</td><td>pass</td></tr>
+<tr><td class="align-right">2</td><td>HTTP</td><td class="align-right">132.087</td><td class="align-right">675.600</td><td>pass</td></tr>
+<tr><td class="align-right">3</td><td>SOCKS</td><td class="align-right">166.293</td><td class="align-right">665.139</td><td>pass</td></tr>
+<tr><td class="align-right">4</td><td>HTTP</td><td class="align-right">106.548</td><td class="align-right">531.070</td><td>pass</td></tr>
+<tr><td class="align-right">5</td><td>SOCKS</td><td class="align-right">103.443</td><td class="align-right">506.896</td><td>pass</td></tr>
+<tr><td class="align-right">6</td><td>HTTP</td><td class="align-right">105.750</td><td class="align-right">518.138</td><td>pass</td></tr>
+<tr><td class="align-right">7</td><td>SOCKS</td><td class="align-right">109.215</td><td class="align-right">523.824</td><td>pass</td></tr>
+<tr><td class="align-right">8</td><td>HTTP</td><td class="align-right">110.875</td><td class="align-right">423.481</td><td>pass</td></tr>
+<tr><td class="align-right">9</td><td>SOCKS</td><td class="align-right">137.089</td><td class="align-right">566.320</td><td>pass</td></tr>
+<tr><td class="align-right">10</td><td>HTTP</td><td class="align-right">105.425</td><td class="align-right">391.788</td><td>pass</td></tr>
+<tr><td class="align-right">11</td><td>SOCKS</td><td class="align-right">194.434</td><td class="align-right">629.375</td><td>pass</td></tr>
+<tr><td class="align-right">12</td><td>HTTP</td><td class="align-right">212.704</td><td class="align-right">648.495</td><td>pass</td></tr>
+<tr><td class="align-right">13</td><td>SOCKS</td><td class="align-right">108.735</td><td class="align-right">569.387</td><td>pass</td></tr>
+<tr><td class="align-right">14</td><td>HTTP</td><td class="align-right">190.937</td><td class="align-right">612.174</td><td>pass</td></tr>
+<tr><td class="align-right">15</td><td>SOCKS</td><td class="align-right">125.839</td><td class="align-right">567.507</td><td>pass</td></tr>
+<tr><td class="align-right">16</td><td>HTTP</td><td class="align-right">467.981</td><td class="align-right">2136.019</td><td>pass</td></tr>
+<tr><td class="align-right">17</td><td>SOCKS</td><td class="align-right">218.164</td><td class="align-right">593.784</td><td>pass</td></tr>
+<tr><td class="align-right">18</td><td>HTTP</td><td class="align-right">147.900</td><td class="align-right">667.463</td><td>pass</td></tr>
+<tr><td class="align-right">19</td><td>SOCKS</td><td class="align-right">112.161</td><td class="align-right">534.874</td><td>pass</td></tr>
+<tr><td class="align-right">20</td><td>HTTP</td><td class="align-right">104.305</td><td class="align-right">529.690</td><td>pass</td></tr>
+</tbody>
+</table>
+</div>
+<p>The trace observed <code>eth0</code> up with carrier, a default route through
+<code>192.168.64.1</code>, and the original upstream in <code>/etc/resolv.conf</code> at approximately
+0.38 seconds guest uptime. At the first query, resolver configuration had
+changed to <code>127.0.0.1</code> while the broker's actual upstream packets still targeted
+<code>192.168.64.1:53</code>. Link/route readiness is not proof of DNS-server readiness.</p>
+<p>Controlled loss was then compared in separate fresh VMs. A test-only guest
+input rule dropped the first two upstream replies, one A and one AAAA:</p>
+<div class="table-scroll" role="group" aria-label="Historical qualification results table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Guest</th><th scope="col">Front end</th><th scope="col">First result</th><th scope="col" class="align-right">First request ms</th></tr></thead>
+<tbody>
+<tr><td>Official 0.2.1</td><td>SOCKS</td><td>REP <code>0x04</code>, failure</td><td class="align-right">3004.633</td></tr>
+<tr><td>Official 0.2.1</td><td>HTTP</td><td>CONNECT 502, failure</td><td class="align-right">3002.812</td></tr>
+<tr><td>Patched test guest</td><td>SOCKS</td><td>REP <code>0x00</code>, TLS, HTTP 400</td><td class="align-right">2063.331</td></tr>
+<tr><td>Patched test guest</td><td>HTTP</td><td>CONNECT 200, TLS, HTTP 400</td><td class="align-right">2809.843</td></tr>
+</tbody>
+</table>
+</div>
+<p>The drop counters verified exactly two lost replies in each experiment.
+Patched retransmissions retained each original question, ID and source port,
+at approximately 1502 ms after the initial send. There was no retry of the
+measured application request. Both patched cold requests passed, and all four
+VMs kept both denials and containment checks intact and were deleted.</p>
+<p>In the released fault-injection runs, the <em>later denial check</em> on API port 444
+caused a new resolution around three seconds later, which received replies but
+still denied the forbidden port. That later DNS success was not substituted
+for the failed first request.</p>
+<p>The injected loss boundary was deliberately inside the owned guest, between
+interface capture and the resolver socket: the trace can see the replies that
+the test rule drops. This is not evidence that the original naturally missing
+replies were lost at that boundary. The natural incident's external cause
+remains unconfirmed; this delivery fixes and verifies SendBox's identified
+single-loss handling, not an established Apple/upstream defect.</p>
+<h2 id="build-the-standalone-fixture">Build the standalone fixture</h2>
+<p>Use the existing Apple service without restarting or reconfiguring it:</p>
+<pre tabindex="0"><code class="language-bash">container build --no-cache --tag sendbox-dns-cold:local \
+  test-fixtures/dns-cold-start
+DIGEST=&quot;$(container image inspect sendbox-dns-cold:local |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)[0][&quot;index&quot;][&quot;digest&quot;])')&quot;
+container image tag sendbox-dns-cold:local &quot;sendbox-dns-cold@$DIGEST&quot;</code></pre>
+<p>The image adds Python, certificates and nftables to a digest-pinned Alpine
+base. Its Python entry executable is a regular file rather than a symlink.
+SendBox still launches the workload non-root with NNP, seccomp and cleared
+capabilities. Only a separate diagnostic control exec needs root for passive
+capture or the explicit packet-loss fixture.</p>
+<pre tabindex="0"><code class="language-bash">python3 scripts/qualify-dns-cold-start.py \
+  --bundle /usr/local/share/sendbox/guest/aarch64/bundle \
+  --trust-root /usr/local/share/sendbox/guest/aarch64/release-public.key \
+  --image &quot;sendbox-dns-cold@$DIGEST&quot; \
+  --allowed-cname glb-db52c2cf8be544.github.com \
+  --count 20 --trace \
+  --output /absolute/path/to/new/cold-dns-results.jsonl</code></pre>
+<p>Use the exact, explicitly approved canonical hostname observed for your target,
+not a wildcard or an automatically accepted alias. The generated fixture policy
+permits only that hostname, <code>api.githubcopilot.com</code>, and TCP 443. It forwards no
+GitHub/Copilot credentials and references no secrets. It is not a modification
+of your project's policy.</p>
+<p>The runner alternates SOCKS DOMAIN CONNECT and HTTP CONNECT across 20
+sequential <code>sendbox run</code> invocations. Each VM must report a unique kernel boot
+ID. The probe opens only the loopback proxy before the measured request; it
+never invokes the OS resolver. After recording that first result, it checks
+that <code>denied.example:443</code> and the API on port 444 remain denied. Those later
+checks cannot turn a failed first request into a pass.</p>
+<p>JSONL records include every first-request and CONNECT latency, containment
+checks, denials, cleanup status and summary percentiles. A batch header records
+the unique owned-VM prefix before launch, including for interrupted batches.
+<code>--trace</code> captures scoped DNS headers plus numeric resolver, link and route
+metadata in the owned VM. It does not delay the workload waiting for capture
+and does not retain raw packets. The runner bounds a host invocation
+to 120 seconds, allows cancellation cleanup, and targets only its unique VM
+names. It never stops the Apple service or touches unrelated containers.</p>
+<p>To verify the mitigation against controlled loss, add <code>--drop-first-replies</code>.
+This opts into an additional nftables table <strong>inside each owned test VM</strong> that
+drops exactly the first two upstream UDP replies. Its earlier input hook
+cannot bypass the mandatory SendBox filter. The fixture records its drop
+counter; a run cannot pass this qualification without verifying two drops and
+capturing both initial A/AAAA exchanges.
+Use a separate output file and report these runs as fault injection, not as
+natural upstream failures.</p>
+<p>For patched-guest qualification, rebuild and sign the guest with a separate
+test-only key and root-owned bundle/trust-root path, then pass that path and
+<code>--trust-root-id</code>. Follow the
+<a href="../architecture/guest-artifact-bundles/#reproduce-locally">guest artifact instructions</a>.
+Do not replace the installed official bundle or trust root. A locally signed
+development bundle is not a release attestation.</p>
+<h2 id="direct-upstream-diagnostic">Direct-upstream diagnostic</h2>
+<p>To test the Apple network/upstream path independently of SendBox, without
+performing any application or authenticated model request:</p>
+<pre tabindex="0"><code class="language-bash">container run --rm --name sendbox-dns-upstream-UNIQUE --user 1000 \
+  --entrypoint /usr/local/bin/sendbox-dns-python \
+  &quot;sendbox-dns-cold@$DIGEST&quot; /opt/sendbox-dns/probe.py upstream --attempts 1</code></pre>
+<p>This reads the VM's selected numeric nameserver and sends the measured A/AAAA
+questions directly. It is a diagnostic, never a runtime fallback. The optional
+<code>--attempts 2</code> labels a separate retransmission after the first three-second
+receive window; its success must not be reported as first-attempt success.
+Only header/question metadata and scoped CNAMEs are emitted, never packet
+bytes or response bodies.</p>
+<h2 id="regression-checks">Regression checks</h2>
+<pre tabindex="0"><code class="language-bash">cargo test --locked -p sendbox-egress --all-targets
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s test-fixtures/dns-cold-start -p 'test_*.py'</code></pre>
+<p>Paused-clock fixtures cover first-datagram loss, the retry boundary, the
+two-send cap, overall deadline, a late successful family with a missing AAAA
+reply, TCP fallback/body deadlines, cancellation in UDP and TCP, permanent
+errors, failed-resolution cache isolation, broker timeout, cancellation racing
+retry, and CNAME denial after retransmission. No test uses personal credentials
+or customer data.</p>
+<p>Local checks passed on macOS and in the native aarch64 guest build environment,
+including 50 repetitions of the 24-case resolver/cold-gateway suite, the
+11-test standalone harness suite, dependent guest/MCP/Apple adapter tests,
+release build and staged host installation, and dependency audit.
+Local host Rust 1.99.1 also reported two pre-existing, untouched warnings:
+deprecated <code>Atomic::fetch_update</code> in <code>sendbox-testkit</code> and an unused <code>BodyExt</code>
+test import in <code>sendbox-mcp</code>. The native guest used the pinned Rust 1.93.1.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/dns-cold-start.md"><code>docs/dns-cold-start.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/dns-cold-start.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../hyperlight/"><span class="pager-label">Previous</span> Hyperlight</a>
+<a class="pager-next" href="../package-supply-chain/"><span class="pager-label">Next</span> Package supply-chain proxy</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="./" aria-current="page">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

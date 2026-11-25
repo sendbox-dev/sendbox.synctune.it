@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Safe Outputs | SendBox docs</title>
+  <meta name="description" content="SendBox implements a partial-conformance GitHub Agentic Workflows Safe Outputs gateway for Apple and Kata sessions. The agent receives no GitHub write…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Safe Outputs | SendBox docs">
+  <meta property="og:description" content="SendBox implements a partial-conformance GitHub Agentic Workflows Safe Outputs gateway for Apple and Kata sessions. The agent receives no GitHub write…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/safe-outputs/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/safe-outputs/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Safe Outputs</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="native-safe-outputs-gateway">Native Safe Outputs gateway</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#supported-subset">Supported subset</a></li>
+<li><a href="#configuration">Configuration</a></li>
+<li><a href="#trust-boundary-and-lifecycle">Trust boundary and lifecycle</a></li>
+<li><a href="#sanitization-and-authorization">Sanitization and authorization</a></li>
+<li><a href="#staged-and-apply-modes">Staged and apply modes</a></li>
+<li><a href="#pull-request-transport">Pull-request transport</a></li>
+<li><a href="#limitations">Limitations</a></li>
+</ol>
+</nav>
+<p>SendBox implements a partial-conformance
+<a href="https://github.github.com/gh-aw/specs/safe-outputs-specification/">GitHub Agentic Workflows Safe Outputs</a>
+gateway for Apple and Kata sessions. The agent receives no GitHub write
+credential. It can only declare bounded operations through a trusted local MCP
+server.</p>
+<h2 id="supported-subset">Supported subset</h2>
+<p>GitHub write tools:</p>
+<ul>
+<li><code>create_issue</code></li>
+<li><code>add_comment</code></li>
+<li><code>create_pull_request</code></li>
+<li><code>add_labels</code></li>
+<li><code>remove_labels</code></li>
+</ul>
+<p>System reporting tools:</p>
+<ul>
+<li><code>noop</code></li>
+<li><code>missing_tool</code></li>
+<li><code>missing_data</code></li>
+<li><code>report_incomplete</code></li>
+</ul>
+<p>Asset and artifact upload tools are intentionally unsupported because they
+would require a separately constrained storage write primitive.</p>
+<h2 id="configuration">Configuration</h2>
+<p>Safe Outputs is disabled and staged by default. A minimal issue-only
+configuration is:</p>
+<pre tabindex="0"><code class="language-yaml">policy:
+  boundaries:
+    enabled: true
+    tool_calls:
+      transport: stdio
+      default_action: deny
+      allowlist: []
+      denylist: []
+      max_frame_bytes: 1048576
+      server_command_patterns: []
+      allowed_server_commands: []
+
+github:
+  forward_auth: false
+  forward_copilot_auth: true
+  allow_private_repository_access: false
+  branch_protection:
+    enabled: true
+    protected_branches: [main, master]
+    allowed_branch_patterns: [&quot;copilot/*&quot;]
+  safe_outputs:
+    enabled: true
+    mode: staged
+    write_token_env: SENDBOX_SAFE_OUTPUTS_GITHUB_TOKEN
+    allowed_repositories: [owner/repository]
+    allowed_domains: [github.com]
+    allowed_mentions: []
+    max_artifact_bytes: 131072
+    create_issue:
+      enabled: true
+      max: 1
+      title_prefix: &quot;[sendbox] &quot;
+      labels: [triage]
+      assignees: []</code></pre>
+<p>The host compiler auto-admits only the installed Safe Outputs command and the
+enabled tool names. An explicit denylist match still fails closed.</p>
+<p>Configure the MCP client to launch the gateway through the native broker:</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;mcpServers&quot;: {
+    &quot;safe-outputs&quot;: {
+      &quot;type&quot;: &quot;stdio&quot;,
+      &quot;command&quot;: &quot;/run/sendbox-boundary/mcp-broker&quot;,
+      &quot;args&quot;: [&quot;--&quot;, &quot;/run/sendbox-boundary/safe-outputs-mcp&quot;]
+    }
+  }
+}</code></pre>
+<p>For <code>mode: apply</code>, provide a fine-grained token through the host process
+environment named by <code>write_token_env</code>. Do not place the value in YAML, project
+MCP configuration, a forwarded SendBox secret, or guest environment. When
+Copilot authentication is forwarded, <code>write_token_env</code> also cannot reuse either
+host Copilot token variable.</p>
+<h2 id="trust-boundary-and-lifecycle">Trust boundary and lifecycle</h2>
+<ol>
+<li>The host compiles the complete policy into authenticated bootstrap and the
+signed boundary feature admissions.</li>
+<li>The guest supervisor installs the exact MCP bridge and starts a mandatory,
+health-reported root-owned recorder under
+<code>/run/sendbox-safe-outputs/&lt;session&gt;</code>. Gateway mode verifies that the running
+executable is the root-owned, non-writable installed path rather than
+trusting <code>argv[0]</code>.</li>
+<li>The workload bridge can reach only a <code>0660</code> writer socket. The recorder
+authenticates the peer UID and GID, performs framing and schema validation,
+sanitizes content, enforces targets and limits, and atomically replaces a
+root-owned <code>0600</code> NDJSON artifact.</li>
+<li>Each accepted record binds the session, boundary-plan digest, policy digest,
+sequence, timestamp, idempotency key, previous hash, operation, and record
+hash.</li>
+<li>After the execution broker proves descendant cleanup, the guest fences the
+writer, drains complete in-flight frames, and creates an HKDF/HMAC seal over
+the artifact hash, chain head, counts, and provenance before returning the
+terminal result.</li>
+<li>The host requests the artifact exactly once over the authenticated control
+channel. Missing capability negotiation, malformed collection, duplicate
+collection, foreign provenance, or an invalid seal fails the run.</li>
+<li>The host tears down the guest, control channel, runtime, and secret resolver.
+It then independently validates and sanitizes the full batch before reading
+the dedicated write-token environment variable.</li>
+</ol>
+<p>The supervisor uses an in-process typed control channel, so untrusted bytes
+never reach sealing or collection commands.</p>
+<h2 id="sanitization-and-authorization">Sanitization and authorization</h2>
+<p>The recorder and host processor both enforce:</p>
+<ul>
+<li>exact <code>owner/repository</code> targets;</li>
+<li>per-tool all-or-nothing count limits;</li>
+<li>NFKC normalization and bounded text;</li>
+<li>credential-pattern redaction;</li>
+<li>URL allowlisting;</li>
+<li>instruction and mention neutralization;</li>
+<li>HTML angle escaping;</li>
+<li>allowed labels, assignees, base branches, and pull-request paths;</li>
+<li>deterministic idempotency keys and duplicate rejection.</li>
+</ul>
+<p>System reporting operations never enter the token-bearing GitHub writer.</p>
+<h2 id="staged-and-apply-modes">Staged and apply modes</h2>
+<p><code>staged</code> writes no GitHub data and does not resolve a token. It persists a
+deterministic preview at:</p>
+<pre tabindex="0"><code class="language-text">&lt;state&gt;/sessions/&lt;session&gt;/safe-outputs-report.json</code></pre>
+<p>The report renders each sanitized operation and binds the session,
+boundary-plan digest, policy digest, artifact hash, chain head, operation
+sequence, tool, idempotency key, status, and any result URL. The signed session
+audit records separate verified and processed events with the same batch
+provenance.</p>
+<p><code>apply</code> persists a private idempotency ledger before each external write:</p>
+<pre tabindex="0"><code class="language-text">&lt;state&gt;/sessions/&lt;session&gt;/safe-outputs-ledger.json</code></pre>
+<p>Create operations carry a hidden provenance marker. A retry reconciles pending
+issues, comments, and pull requests against that marker before writing again.
+Label APIs are retried through their idempotent forms. GitHub applies a
+preflight-validated batch sequentially, so a remote failure can leave earlier
+operations applied; the ledger makes that partial state explicit and
+recoverable.</p>
+<h2 id="pull-request-transport">Pull-request transport</h2>
+<p>Pull requests never mutate the user's index or current ref. The host:</p>
+<ul>
+<li>rejects protected, disallowed, non-UTF-8, non-normalized, symlinked-parent,
+symlink, directory, conflict, file-count, and patch-size cases before any
+GitHub API write;</li>
+<li>snapshots source hashes and rechecks them before copying;</li>
+<li>fetches the configured base into a private temporary repository and requires
+it to match the commit used for local preflight;</li>
+<li>disables system/global Git configuration, credential helpers, prompts,
+hooks, fsmonitor, external diff/text conversion, redirects, proxies, and
+commit signing;</li>
+<li>creates a deterministic commit on <code>safe-outputs/&lt;session&gt;-&lt;key&gt;</code>;</li>
+<li>passes the token only through a private askpass environment;</li>
+<li>pushes one explicit non-force refspec to an HTTPS <code>github.com</code> URL;</li>
+<li>verifies an existing retry branch has the expected commit before creating
+the pull request.</li>
+</ul>
+<p>Temporary Git state and askpass files are removed after processing. The token
+is never placed in argv, URLs, diagnostics, the ledger, the report, or
+persistent Git configuration.</p>
+<h2 id="limitations">Limitations</h2>
+<ul>
+<li>Only GitHub.com REST endpoints are supported.</li>
+<li>Apply is sequential after complete local preflight, not transactionally
+atomic at GitHub.</li>
+<li>Reconciliation scans the newest 100 matching GitHub objects.</li>
+<li>Pull-request changes must be regular files in the mounted repository;
+symlinks and submodule updates are rejected.</li>
+<li>Hyperlight does not support the persistent authenticated gateway.</li>
+</ul>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/safe-outputs.md"><code>docs/architecture/safe-outputs.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/safe-outputs.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../git-branch-guard/"><span class="pager-label">Previous</span> Git branch guard</a>
+<a class="pager-next" href="../security-records/"><span class="pager-label">Next</span> Security records</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="./" aria-current="page">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

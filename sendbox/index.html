@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SendBox documentation</title>
+  <meta name="description" content="Give your coding agent a workspace, not your whole machine. SendBox is an open-source Rust CLI for running coding agents in dedicated Linux VMs on macOS and…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="SendBox documentation">
+  <meta property="og:description" content="Give your coding agent a workspace, not your whole machine. SendBox is an open-source Rust CLI for running coding agents in dedicated Linux VMs on macOS and…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../"><img src="../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="./" aria-current="page">SendBox docs</a></li>
+        <li><a href="../fleet/">Fleet docs</a></li>
+        <li><a href="../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<main id="main">
+<section class="project-hero">
+<div class="wrap project-hero-inner">
+<img src="../assets/logos/sendbox.svg" alt="" width="96" height="96">
+<div>
+<p class="eyebrow">Documentation</p>
+<h1>SendBox</h1>
+<p class="lede">Give your coding agent a workspace, not your whole machine.</p>
+<p>SendBox is an open-source Rust CLI for running coding agents in dedicated Linux VMs on macOS and Linux. Keep your terminal workflow while explicitly choosing the files, network destinations, credentials and MCP tools a session can use.</p>
+<p class="actions"><a class="button" href="overview/">Overview and quick start</a> <a class="button secondary" href="https://github.com/sendbox-dev/sendbox">Source on GitHub</a></p>
+</div>
+</div>
+</section>
+<div class="wrap docs-index">
+<section class="doc-group" aria-labelledby="group-1">
+<h2 id="group-1">Get started</h2>
+<ul class="doc-list">
+<li><a href="overview/"><span class="doc-title">Overview and quick start</span><span class="doc-summary">What SendBox is, supported agents and the shortest path to a first run.</span></a></li>
+<li><a href="installation/"><span class="doc-title">Installation</span><span class="doc-summary">Host and runtime requirements, workload images, release verification, source builds and macOS package notes.</span></a></li>
+<li><a href="configuration/"><span class="doc-title">Configuration</span><span class="doc-summary">YAML examples, policy settings and credential configuration.</span></a></li>
+<li><a href="cli-reference/"><span class="doc-title">CLI reference</span><span class="doc-summary">Commands, run flags and common examples.</span></a></li>
+<li><a href="interactive-sessions/"><span class="doc-title">Interactive sessions</span><span class="doc-summary">Terminal requirements, behavior and troubleshooting.</span></a></li>
+<li><a href="cli-agents/"><span class="doc-title">CLI agents</span><span class="doc-summary">Agent profiles, native MCP formats, multi-repo scope, HTTP proxies and syscall tracing.</span></a></li>
+<li><a href="integrations/"><span class="doc-title">Integrations</span><span class="doc-summary">MCP, GitHub, model providers, private registries, devcontainers and CI workflows.</span></a></li>
+<li><a href="similar-tools/"><span class="doc-title">Similar tools</span><span class="doc-summary">SendBox compared with other agent sandboxes and dev containers.</span></a></li>
+</ul>
+</section>
+<section class="doc-group" aria-labelledby="group-2">
+<h2 id="group-2">Runtimes and operations</h2>
+<ul class="doc-list">
+<li><a href="apple-runtime/"><span class="doc-title">Apple runtime</span><span class="doc-summary">Apple Containerization on macOS, supported container CLI versions and qualification status.</span></a></li>
+<li><a href="kata-containers/"><span class="doc-title">Kata Containers</span><span class="doc-summary">The Linux runtime: Kata, containerd, nerdctl and KVM setup.</span></a></li>
+<li><a href="hyperlight/"><span class="doc-title">Hyperlight</span><span class="doc-summary">The explicit one-shot Linux/KVM provider and what it rejects.</span></a></li>
+<li><a href="dns-cold-start/"><span class="doc-title">Cold-start DNS diagnostics</span><span class="doc-summary">A credential-free diagnostic for first-request networking failures.</span></a></li>
+<li><a href="package-supply-chain/"><span class="doc-title">Package supply-chain proxy</span><span class="doc-summary">Verify and inspect npm packages before their bytes reach the workload.</span></a></li>
+<li><a href="mcp-inspection/"><span class="doc-title">MCP inspection</span><span class="doc-summary">The MCP boundary, tool policies and inspection records.</span></a></li>
+</ul>
+</section>
+<section class="doc-group" aria-labelledby="group-3">
+<h2 id="group-3">Security</h2>
+<ul class="doc-list">
+<li><a href="security-model/"><span class="doc-title">Security model</span><span class="doc-summary">Guarantees, assumptions and defense-in-depth analysis.</span></a></li>
+<li><a href="security-policy/"><span class="doc-title">Reporting vulnerabilities</span><span class="doc-summary">How to report a vulnerability privately and which versions receive fixes.</span></a></li>
+<li><a href="egress-trust-boundary/"><span class="doc-title">Egress trust boundary</span><span class="doc-summary">The egress enforcement trust boundary and runtime integration contract.</span></a></li>
+<li><a href="secrets-migration/"><span class="doc-title">Secrets migration</span><span class="doc-summary">Moving existing secrets to the current secret store.</span></a></li>
+<li><a href="security-records-migration/"><span class="doc-title">Security-record migration</span><span class="doc-summary">Migrating stored security records.</span></a></li>
+</ul>
+</section>
+<section class="doc-group" aria-labelledby="group-4">
+<h2 id="group-4">Contribute <span class="badge">For contributors</span></h2>
+<ul class="doc-list">
+<li><a href="contributing/"><span class="doc-title">Contributing</span><span class="doc-summary">Source setup, checks, documentation conventions and release procedures.</span></a></li>
+<li><a href="qualification/"><span class="doc-title">Qualification</span><span class="doc-summary">The qualification inventory, conformance checks and benchmarks.</span></a></li>
+<li><a href="roadmap/"><span class="doc-title">Roadmap</span><span class="doc-summary">Future proposals and historical designs.</span></a></li>
+</ul>
+</section>
+<section class="doc-group" aria-labelledby="group-5">
+<h2 id="group-5">Architecture <span class="badge">For contributors</span></h2>
+<ul class="doc-list compact">
+<li><a href="architecture/runtime-core/"><span class="doc-title">Runtime core</span></a></li>
+<li><a href="architecture/execution-broker/"><span class="doc-title">Execution broker</span></a></li>
+<li><a href="architecture/guest-supervisor/"><span class="doc-title">Guest supervisor</span></a></li>
+<li><a href="architecture/guest-artifact-bundles/"><span class="doc-title">Guest artifact bundles</span></a></li>
+<li><a href="architecture/interactive-terminal/"><span class="doc-title">Interactive terminal</span></a></li>
+<li><a href="architecture/kata-runtime/"><span class="doc-title">Kata runtime</span></a></li>
+<li><a href="architecture/authenticated-guest-protocol/"><span class="doc-title">Authenticated guest protocol</span></a></li>
+<li><a href="architecture/session-security-lifecycle/"><span class="doc-title">Session security lifecycle</span></a></li>
+<li><a href="architecture/egress-enforcement/"><span class="doc-title">Egress enforcement</span></a></li>
+<li><a href="architecture/mcp-broker/"><span class="doc-title">MCP broker</span></a></li>
+<li><a href="architecture/package-registry-proxy/"><span class="doc-title">Package registry proxy</span></a></li>
+<li><a href="architecture/secrets-and-credential-broker/"><span class="doc-title">Secrets and credential broker</span></a></li>
+<li><a href="architecture/governed-sessions/"><span class="doc-title">Governed sessions</span></a></li>
+<li><a href="architecture/git-branch-guard/"><span class="doc-title">Git branch guard</span></a></li>
+<li><a href="architecture/safe-outputs/"><span class="doc-title">Safe Outputs</span></a></li>
+<li><a href="architecture/security-records/"><span class="doc-title">Security records</span></a></li>
+<li><a href="architecture/agent-orchestration/"><span class="doc-title">Agent orchestration</span></a></li>
+<li><a href="architecture/native-project-analysis/"><span class="doc-title">Native project analysis</span></a></li>
+<li><a href="architecture/rust-cli-parity/"><span class="doc-title">Rust CLI</span></a></li>
+</ul>
+</section>
+<p class="source-note">These pages are published unchanged from <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a> (2026-11-22). Links to files that aren't published here open on GitHub at that commit.</p>
+</div>
+</main>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

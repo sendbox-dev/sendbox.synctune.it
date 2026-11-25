@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roadmap | SendBox Fleet docs</title>
+  <meta name="description" content="Delivered and remaining work.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Roadmap | SendBox Fleet docs">
+  <meta property="og:description" content="Delivered and remaining work.">
+  <meta property="og:url" content="https://sendbox.synctune.it/fleet/roadmap/">
+  <link rel="canonical" href="https://sendbox.synctune.it/fleet/roadmap/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../sendbox/">SendBox docs</a></li>
+        <li><a href="../" class="is-active">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox Fleet docs</a></li>
+<li><span aria-current="page">Roadmap</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox Fleet docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox Fleet · Contribute</p>
+<h1 id="roadmap">Roadmap</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#done">Done</a></li>
+<li><a href="#remaining">Remaining</a></li>
+<li><a href="#non-goals">Non-goals</a></li>
+</ol>
+</nav>
+<p>Increment-2 work for
+<a href="https://github.com/sendbox-dev/sendbox/issues/87">mbianchidev/sendbox#87</a>.
+Each item names the issue's acceptance criteria (AC) it serves:</p>
+<ul>
+<li><strong>AC1</strong> A trusted shared profile is enforced at actual session admission and
+execution; project configuration and CLI flags cannot broaden or bypass it.</li>
+<li><strong>AC4</strong> Cross-principal, project, or session requests, changed policy
+bindings, and forbidden destinations, methods, or paths are rejected at the
+enforcement boundary.</li>
+<li><strong>AC5</strong> Expired or revoked grants, stale policy, and unavailable
+authorization produce explicit denial without credential export or fallback.</li>
+<li><strong>AC6</strong> Session cancellation and teardown end grants while preserving
+redacted audit evidence and reporting uncertain external outcomes honestly.</li>
+<li><strong>AC7</strong> The shared-service increment enforces project-scoped roles and
+authorized, expiring exceptions with attributable audit records.</li>
+<li><strong>AC8</strong> Standalone workflows stay unchanged unless governance is selected;
+compatibility and trust boundaries are documented.</li>
+</ul>
+<h2 id="done">Done</h2>
+<p>The scaffold delivered the service skeleton, the schema with its database
+invariants, CI, and these documents. Increment 2 then delivered:</p>
+<ul>
+<li><strong>Caller authentication</strong> (AC7). Opaque bearer tokens issued by
+<code>sendbox-fleet admin token issue</code>, stored only as SHA-256 digests, expiring
+within 90 days, revocable, and void when the principal is disabled. The
+bearer-only rule and &quot;authenticate before validating&quot; ordering are kept.</li>
+<li><strong>Persistence</strong> (all). Backend-neutral transactions over PostgreSQL and
+SQLite with serialized writers, an injectable clock, random identifiers,
+and every change committed with its audit event.</li>
+<li><strong>Profiles</strong> (AC1, AC5). Publication verified against <code>FLEET_PROFILE_TRUST</code>
+using the <code>sendbox.governance-signatures</code> bundle from <code>sendbox governance sign</code>; monotonic revisions; current-revision lookup; rising minimums.</li>
+<li><strong>Project-scoped roles</strong> (AC7). Operator project bootstrap, owner-managed
+assignment and removal, last-owner guard, audited refusals. Roles gate
+admission, exceptions, and audit visibility.</li>
+<li><strong>Session admission</strong> (AC1, AC4). Caller-bound principal, this authority,
+<code>member</code> role, current revision, offered services, and valid exceptions.</li>
+<li><strong>Grants and revocation</strong> (AC4, AC5, AC6). Issue, renew, revoke, and end
+sessions with bounded leases, exception-capped expiry, and the profile grace
+window. The SendBox host's remote authority client lives in the sendbox
+repository.</li>
+<li><strong>Per-request authorization</strong> (AC4, AC5). Same rules as the local authority
+through the shared <code>evaluate_request</code>, plus session and exception state.</li>
+<li><strong>Exceptions</strong> (AC7). Request, approve, reject, revoke; a different
+<code>owner</code> or <code>admin</code> approves; scope limited to denials the signed revision
+lists as liftable; expiry at most 7 days; stale approvals rejected after a
+new revision or minimum.</li>
+<li><strong>Central audit</strong> (AC6, AC7). Hash-chained events for every decision with
+actor, principal, project, session, grant, exception, revision, decision,
+redacted target, and detail; role-scoped queries; chain verification.</li>
+<li><strong>Identity providers</strong> (AC7). Any OpenID Connect issuer for people and
+machine identities such as GitHub Actions: JWKS verification with <code>ring</code>
+(<code>RS256</code>, <code>ES256</code>, <code>EdDSA</code>), exact issuer and audience, required claims,
+verified email, optional auto-provisioning without roles. <code>POST /v1/tokens</code> exchanges a sign-in for a short-lived service token, which
+<code>sendbox governance login</code> stores on the host; tokens can be listed and
+revoked.</li>
+<li><strong>Outcomes and anchoring</strong> (AC6, AC7). Hosts report each brokered stream's
+outcome (<code>succeeded</code>, <code>failed</code>, <code>unknown</code>) to <code>POST /v1/grants/{grant}:outcome</code>, recorded as <code>request.outcome</code>. Chain heads are
+signed (<code>GET /v1/audit/head</code>), written periodically to an anchor directory,
+and checked with <code>sendbox-fleet admin audit verify</code>.</li>
+<li><strong>Operations</strong> (AC8). Least-privilege PostgreSQL roles
+(<code>deploy/postgres/roles.sql</code>, no <code>UPDATE</code>/<code>DELETE</code> on audit for the
+runtime role), <code>FLEET_MIGRATE=false</code> with <code>admin migrate</code>, per-principal and
+per-peer rate limits, Prometheus metrics on a separate listener, size and
+daily log rotation, and <a href="../deployment/">deployment</a> guidance for TLS,
+identity providers, anchoring, metrics, and backups.</li>
+<li><strong>Dependencies.</strong> Rust 1.100.0 and sqlx 0.9, which removed the unused
+<code>rsa</code> advisory exception.</li>
+</ul>
+<h2 id="remaining">Remaining</h2>
+<ol>
+<li><strong>Live end-to-end runs.</strong> Run Apple and Kata governed sessions against a
+deployed fleet and real model providers. The provider path (broker,
+relay, credential injection) is host-side, so this is tracked in SendBox:
+<a href="https://github.com/sendbox-dev/sendbox/issues/96">mbianchidev/sendbox#96</a>.</li>
+<li><strong><code>RUSTSEC-2026-0459</code>.</strong> Drop the exception in <code>.cargo/audit.toml</code> once an
+sqlx release allows libsqlite3-sys 0.39. It affects only SQLite, which
+production does not use.</li>
+</ol>
+<h2 id="non-goals">Non-goals</h2>
+<p>Kubernetes or fleet scheduling, universal TLS interception, formal policy
+verification, and replacing SendBox isolation providers (as in the issue).
+The service never stores or forwards provider credentials.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/docs/roadmap.md"><code>docs/roadmap.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox-fleet">sendbox-dev/sendbox-fleet</a> at commit <a href="https://github.com/sendbox-dev/sendbox-fleet/commit/962a6cf18913e41995dfde12c872be9497d2b1e9"><code>962a6cf</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox-fleet/edit/main/docs/roadmap.md">edit it in sendbox-dev/sendbox-fleet</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../development/"><span class="pager-label">Previous</span> Development</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox Fleet documentation">
+<p class="nav-project"><a href="../">SendBox Fleet docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../deployment/">Deployment</a></li>
+<li><a href="../architecture/">Architecture</a></li>
+<li><a href="../contract/">Shared contract</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../threat-model/">Threat model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../development/">Development</a></li>
+<li><a href="./" aria-current="page">Roadmap</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

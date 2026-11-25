@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interactive sessions | SendBox docs</title>
+  <meta name="description" content="Terminal requirements, behavior and troubleshooting.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Interactive sessions | SendBox docs">
+  <meta property="og:description" content="Terminal requirements, behavior and troubleshooting.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/interactive-sessions/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/interactive-sessions/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Interactive sessions</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Get started</p>
+<h1 id="interactive-terminal-sessions">Interactive terminal sessions</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#behavior">Behavior</a></li>
+<li><a href="#requirements-and-limitations">Requirements and limitations</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+</ol>
+</nav>
+<p><code>sendbox run --interactive</code> runs a workload on a pseudoterminal inside the
+sandbox and forwards the current terminal's keystrokes and window size. Terminal
+agents such as GitHub Copilot CLI, Claude Code, Codex, and Gemini can therefore
+render and accept input normally.</p>
+<pre tabindex="0"><code class="language-bash">sendbox run --interactive \
+  --config .sendbox.yaml \
+  --runtime kata \
+  --image registry.example/workload@sha256:&lt;digest&gt; \
+  --bundle /usr/local/share/sendbox/guest/x86_64/bundle \
+  --trust-root /usr/local/share/sendbox/guest/x86_64/release-public.key \
+  -- /usr/bin/copilot</code></pre>
+<p>Tarball users can point the bundle and trust-root flags at
+<code>guest/&lt;architecture&gt;/</code> inside the extracted release directory. A bundled
+public key is not self-authenticating; trust it only after verifying the host or
+standalone guest archive attestation.</p>
+<h2 id="behavior">Behavior</h2>
+<p>Keystrokes ride the same authenticated control channel as workload output, so
+they inherit its message authentication, replay protection, and session
+binding. No additional port, socket, or privilege is introduced.</p>
+<p>The launcher grants a bounded window of 64 input chunks, each at most 4 KiB, and
+the CLI stops reading stdin when that credit is exhausted. A workload that
+temporarily stops reading therefore applies backpressure instead of losing
+pasted bytes.</p>
+<p>Standard error remains merged into the controlling terminal by default. Use
+<code>--separate-stderr</code> when diagnostics need their own stream while remaining a
+TTY:</p>
+<pre tabindex="0"><code class="language-bash">sendbox run --interactive --separate-stderr \
+  --config .sendbox.yaml \
+  --runtime kata \
+  --image registry.example/workload@sha256:&lt;digest&gt; \
+  --bundle /usr/local/share/sendbox/guest/x86_64/bundle \
+  --trust-root /usr/local/share/sendbox/guest/x86_64/release-public.key \
+  -- /usr/bin/copilot</code></pre>
+<h2 id="requirements-and-limitations">Requirements and limitations</h2>
+<ul>
+<li>Both stdin and stdout must be a terminal and <code>sendbox</code> must be in that
+terminal's foreground process group. Otherwise the run fails instead of
+silently falling back to a workload with no input.</li>
+<li><code>--interactive</code> cannot be combined with <code>--json</code>; machine-readable output and
+a raw terminal are mutually exclusive.</li>
+<li>Only the <code>apple</code> and <code>kata</code> runtimes provide a terminal. <code>hyperlight</code> rejects
+<code>--interactive</code> before anything is created or started.</li>
+<li><code>Ctrl-C</code>, <code>Ctrl-Z</code>, and <code>Ctrl-D</code> are delivered to the workload's terminal, not
+to <code>sendbox</code>. Use the agent's own quit command to end the session.</li>
+<li>The host <code>TERM</code> is authoritative for the workload and replaces any configured
+<code>TERM</code>.</li>
+<li>Terminal output merges stdout and stderr by default. <code>--separate-stderr</code> gives
+file descriptor 2 a second, non-controlling pseudoterminal and reports it as
+stderr. Both descriptors remain TTYs, but ordering between stdout and stderr
+is no longer strict, so the flag is unsuitable for TUIs that draw through
+file descriptor 2.</li>
+<li><code>--separate-stderr</code> requires <code>--interactive</code> and consumes one additional
+pseudoterminal pair per session.</li>
+<li>Interactive input is lossless within a bounded 64 x 4 KiB credit window. End
+of file is outside the credit budget and remains ordered behind preceding
+input.</li>
+<li>Window size changes are tracked through <code>SIGWINCH</code> for as long as the run
+lasts.</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<div class="table-scroll" role="group" aria-label="Troubleshooting table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Symptom</th><th scope="col">Cause</th><th scope="col">Fix</th></tr></thead>
+<tbody>
+<tr><td><code>--interactive requires a terminal but stdin is not one</code></td><td><code>sendbox</code> is being piped or run from a job runner</td><td>Run it from a terminal, or drop <code>--interactive</code></td></tr>
+<tr><td><code>--interactive requires the foreground process group</code></td><td>Started with <code>&amp;</code> or under a job-control shell in the background</td><td>Bring the job to the foreground</td></tr>
+<tr><td><code>the hyperlight runtime cannot provide an interactive terminal</code></td><td><code>--runtime hyperlight</code></td><td>Use <code>--runtime apple</code> or <code>--runtime kata</code></td></tr>
+<tr><td><code>interactive execution needs a controlling terminal, but the command policy denies: ioctl</code></td><td><code>policy.boundaries.syscalls.additional_denylist</code> blocks terminal syscalls</td><td>Remove <code>ioctl</code>, <code>setsid</code>, <code>dup2</code>, and <code>dup3</code> from the denylist, or run without <code>--interactive</code></td></tr>
+<tr><td>The guest rejects <code>agent.launch.interactive.v2</code></td><td>The host is using an older guest bundle that predates credit flow control</td><td>Install the guest bundle shipped with the same SendBox release</td></tr>
+<tr><td>Pseudoterminal allocation reports resource exhaustion</td><td>Concurrent interactive sessions reached the host PTY limit</td><td>Reduce concurrency or inspect <code>/proc/sys/kernel/pty/max</code> and <code>/proc/sys/kernel/pty/nr</code></td></tr>
+<tr><td>stdout and stderr appear out of order</td><td><code>--separate-stderr</code> uses independent PTY buffers</td><td>Remove <code>--separate-stderr</code> for a single strictly ordered terminal stream</td></tr>
+<tr><td>The agent renders as garbled boxes</td><td>The guest image has no terminfo entry for the host <code>TERM</code></td><td>Set <code>TERM=xterm-256color</code> before running</td></tr>
+</tbody>
+</table>
+</div>
+<p>See the <a href="../architecture/interactive-terminal/">interactive terminal architecture</a>
+for negotiation, flow-control rules, and qualification evidence.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/interactive-sessions.md"><code>docs/interactive-sessions.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/interactive-sessions.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../cli-reference/"><span class="pager-label">Previous</span> CLI reference</a>
+<a class="pager-next" href="../cli-agents/"><span class="pager-label">Next</span> CLI agents</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="./" aria-current="page">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

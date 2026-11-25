@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://sendbox.synctune.it/sitemap.xml

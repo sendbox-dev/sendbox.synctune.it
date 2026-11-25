@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI agents | SendBox docs</title>
+  <meta name="description" content="Agent profiles, native MCP formats, multi-repo scope, HTTP proxies and syscall tracing.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="CLI agents | SendBox docs">
+  <meta property="og:description" content="Agent profiles, native MCP formats, multi-repo scope, HTTP proxies and syscall tracing.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/cli-agents/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/cli-agents/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">CLI agents</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Get started</p>
+<h1 id="cli-agents-and-workspace-isolation">CLI agents and workspace isolation</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#select-an-agent">Select an agent</a></li>
+<li><a href="#credentials-and-agent-state">Credentials and agent state</a></li>
+<li><a href="#repository-or-multi-repository-filesystem-scope">Repository or multi-repository filesystem scope</a></li>
+<li><a href="#agent-compatible-network-proxy">Agent-compatible network proxy</a></li>
+<li><a href="#native-mcp-configuration">Native MCP configuration</a></li>
+<li><a href="#optional-guest-syscall-tracing">Optional guest syscall tracing</a></li>
+</ol>
+</nav>
+<p>SendBox launches an exact guest argv, not a host-side agent wrapper. Moguri,
+OpenCode, Claude Code, Codex, Copilot, Gemini, and other CLI programs use the same
+signed plan, execution broker, terminal transport, MCP services, egress firewall,
+snapshots, Git guard, and optional package analysis.</p>
+<h2 id="select-an-agent">Select an agent</h2>
+<pre tabindex="0"><code class="language-bash">sendbox init --project /projects/my-repo --agent moguri
+# Also accepted: --agent opencode, open-code, claude, codex, copilot, gemini, custom.</code></pre>
+<p>An explicit profile admits the selected entry program and its usual inference
+hosts under a default-deny policy. Non-Copilot profiles disable independent
+Copilot token forwarding; they do not disable Git protection or repository
+credential scoping. Existing <code>init</code> calls without <code>--agent</code> retain their
+configuration defaults.</p>
+<div class="table-scroll" role="group" aria-label="Select an agent table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Profile</th><th scope="col">Initially admitted inference hosts</th></tr></thead>
+<tbody>
+<tr><td><code>moguri</code></td><td><code>api.githubcopilot.com</code>, <code>*.githubcopilot.com</code></td></tr>
+<tr><td><code>opencode</code></td><td><code>opencode.ai</code>, <code>models.dev</code></td></tr>
+<tr><td><code>claude</code></td><td><code>api.anthropic.com</code></td></tr>
+<tr><td><code>codex</code></td><td><code>api.openai.com</code>, <code>chatgpt.com</code>, <code>auth.openai.com</code></td></tr>
+<tr><td><code>copilot</code></td><td><code>api.githubcopilot.com</code>, <code>*.githubcopilot.com</code></td></tr>
+<tr><td><code>gemini</code></td><td><code>generativelanguage.googleapis.com</code>, <code>oauth2.googleapis.com</code>, <code>cloudcode-pa.googleapis.com</code></td></tr>
+<tr><td><code>custom</code></td><td>None; configure the program and endpoints explicitly</td></tr>
+</tbody>
+</table>
+</div>
+<p>OpenCode supports multiple model providers. Add the exact provider endpoints you
+actually use to <code>policy.network.allowed_domains</code>; the profile does not grant
+every provider or plugin unrestricted networking. Deny rules still take
+precedence. Select additional telemetry, authentication, Git, and package hosts
+explicitly rather than changing the policy to allow all traffic.</p>
+<p>The workload image must contain the Linux agent binary, its dependencies,
+certificates, shell, and development tools. SendBox's signed guest bundle
+contains the trusted controls, not Node.js, Bun, or the agents themselves.
+Preinstall MCP servers at fixed absolute image paths instead of configuring
+shells or package runners such as <code>npx</code>.</p>
+<pre tabindex="0"><code class="language-bash">sendbox run --interactive \
+  --config /projects/my-repo/.sendbox.yaml \
+  --image registry.example/agent-tools@sha256:&lt;digest&gt; \
+  --bundle /usr/local/share/sendbox/guest/&lt;architecture&gt;/bundle \
+  --trust-root /usr/local/share/sendbox/guest/&lt;architecture&gt;/release-public.key \
+  -- /usr/local/bin/moguri --project /workspace</code></pre>
+<p>Moguri's <code>moguri</code> executable opens its TUI by default; <code>moguri tui</code> is equivalent.
+<code>--project /workspace</code> selects the shared guest project. The workload image
+needs the full CLI, its supported Node.js runtime, native dependencies, and a
+Linux Secret Service for Moguri's OS-keyring authentication. Sign in inside the
+guest; the <code>moguri</code> profile does not enable SendBox's Copilot CLI token forwarding.
+For another model provider, explicitly allow its endpoints.</p>
+<p>For another agent, replace the final argv with its actual guest executable and
+arguments. For headless operation, drop <code>--interactive</code> and use the agent's
+noninteractive arguments. No executable lookup or shell evaluation happens on
+the host. An unavailable provider or guest primitive is an error, not permission
+to run the command on the host.</p>
+<p>Native agent sandboxes may need adjustment for an already-contained VM.
+For example, Codex can be run with <code>--sandbox danger-full-access</code> to avoid a
+nested sandbox requiring unavailable guest kernel facilities. This is an
+explicit agent option, not a SendBox containment bypass; SendBox never adds
+agent approval-bypass flags automatically.</p>
+<h2 id="credentials-and-agent-state">Credentials and agent state</h2>
+<p>Store an API credential in the SendBox vault and list only the required
+workload reference:</p>
+<pre tabindex="0"><code class="language-bash">sendbox secrets add ANTHROPIC_API_KEY</code></pre>
+<pre tabindex="0"><code class="language-yaml">secrets: [ANTHROPIC_API_KEY]
+github:
+  forward_copilot_auth: false</code></pre>
+<p>For Codex use <code>OPENAI_API_KEY</code>; for another provider use its documented variable.</p>
+<p>In a <a href="../architecture/governed-sessions/#brokered-credentials">governed session</a>,
+list <code>credential_services: [anthropic]</code> (or <code>openai</code>) instead of the provider
+key in <code>secrets</code>. The key stays on the host, and Claude Code or Codex receive
+only a loopback <code>ANTHROPIC_BASE_URL</code> or <code>OPENAI_BASE_URL</code> and a placeholder key.
+The host's home, global agent configuration, browser, keychain files, and
+runtime sockets are not mounted. Each session gets an owner-only guest home at
+<code>/run/sendbox-workload/&lt;session-id&gt;</code> and isolated XDG directories. Login state
+created there disappears with the VM. Use vault references rather than relying
+on host login files being copied implicitly.</p>
+<p>GitHub forwarding remains independently configurable. Disable
+<code>github.forward_auth</code> when no GitHub credential is needed, and disable
+<code>github.branch_protection.enabled</code> for non-Git projects. Keep server-side branch
+protection: local wrappers do not govern alternate clients or direct API writes.</p>
+<h3 id="credential-masking">Credential masking</h3>
+<p>Credential masking is always enabled for workload stdout and stderr, including
+PTY output and JSON/hex CLI output. Values delivered from the vault or session
+credential forwarding are registered before the workload can print them.
+Gateway and registry credentials are also registered for runtime diagnostics.
+Credentials split across chunks are withheld until they can be masked safely;
+stdout and stderr have independent state. An ambiguous credential prefix at
+stream termination is masked rather than printed.</p>
+<p>Recognizable bearer/basic headers, sensitive assignments and JSON fields,
+common provider token prefixes, URL userinfo, and private-key blocks are
+replaced with <code>[REDACTED]</code> even when not registered in the vault. Runtime errors
+are masked before failure-audit persistence. Captured MCP payloads are decoded
+and masked before truncation or log serialization; decoded JSON escapes cannot
+hide a registered value. Safe Outputs human-readable titles, bodies, and
+messages use the same masker before sealing. Original authentication values,
+envelopes, MCP traffic, and proposed source patches are not rewritten.</p>
+<p>Masking is not a data-loss-prevention boundary. Arbitrary encodings,
+obfuscation, credentials assembled across separate output streams, newly
+created opaque credentials with no recognizable form, repository files, and
+source patches are not comprehensively scrubbed. Keep MCP payload capture
+disabled unless needed: non-credential private content may still be recorded.
+Known values are limited to 512 distinct credentials of at most 64 KiB each;
+registration or masking failures stop the affected operation without exposing
+the original diagnostic. Output byte counters describe the original guest
+bytes, not the replacement text.</p>
+<h2 id="repository-or-multi-repository-filesystem-scope">Repository or multi-repository filesystem scope</h2>
+<p>By default, only <code>project_path</code> is shared read/write at <code>/workspace</code>.
+To share an enclosing multi-repository workspace explicitly:</p>
+<pre tabindex="0"><code class="language-bash">sendbox init --project /projects/team/repo-one \
+  --workspace /projects/team --agent codex</code></pre>
+<pre tabindex="0"><code class="language-yaml">project_path: /projects/team/repo-one
+workspace_path: /projects/team</code></pre>
+<p>The only workload host mount becomes <code>/projects/team -&gt; /workspace</code>; the
+initial cwd and selected Git repository remain <code>/workspace/repo-one</code>.
+Sibling repositories inside that root are visible. Repositories outside it,
+host control sockets, and the host home are not added automatically.</p>
+<p>The project must be inside the normalized workspace root. Filesystem-root
+mounts, parent traversal, symlinked source components, and overlapping runtime
+state are rejected. Snapshots and rollback cover the selected shared root;
+Safe Outputs patches still target the selected repository.</p>
+<p>MCP configuration is checked in the selected project and its ancestors up to
+the shared workspace root, never in host-global configuration. These checks
+reject symlinked configuration parents, malformed server containers, and
+unapproved launcher/authentication overrides.</p>
+<h2 id="agent-compatible-network-proxy">Agent-compatible network proxy</h2>
+<p>Persistent guests expose two explicit loopback frontends backed by one
+authorization cache, DNS guard, connection budget, address-pinning path, and
+marked dialer:</p>
+<div class="table-scroll" role="group" aria-label="Agent-compatible network proxy table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Environment</th><th scope="col">Guest endpoint</th></tr></thead>
+<tbody>
+<tr><td><code>ALL_PROXY</code>, <code>all_proxy</code></td><td><code>socks5h://127.0.0.1:15080</code></td></tr>
+<tr><td><code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code>, lowercase equivalents</td><td><code>http://127.0.0.1:15083</code></td></tr>
+<tr><td><code>NO_PROXY</code>, <code>no_proxy</code></td><td><code>localhost,127.0.0.1,::1</code></td></tr>
+<tr><td><code>NODE_USE_ENV_PROXY</code></td><td><code>1</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The HTTP frontend supports CONNECT tunnels and absolute-form plaintext HTTP
+requests. It bounds headers and handshake time, rejects conflicting Host/body
+framing and proxy credentials, and validates the endpoint before dialing.
+HTTPS certificates remain the client's responsibility inside CONNECT tunnels.
+Use a Node.js release supporting <code>NODE_USE_ENV_PROXY</code> for native <code>fetch</code>
+clients; clients that ignore every proxy mechanism fail closed at the firewall.</p>
+<p>nftables restricts the agent cgroup and all execution descendants to the exact
+loopback broker, gateway, and configured package-proxy ports. Direct outbound
+TCP, UDP/QUIC, metadata access, unmarked broker traffic, and unapproved endpoints
+remain denied. HTTP and SOCKS share the same connection limit rather than
+doubling it. Remote MCP upstreams remain reserved from both public frontends.</p>
+<h2 id="native-mcp-configuration">Native MCP configuration</h2>
+<p>SendBox checks the traditional JSON MCP files plus <code>opencode.json</code>,
+<code>opencode.jsonc</code>, <code>.codex/config.toml</code>, and <code>.gemini/settings.json</code>.
+Each definition must select the exact broker argv or trusted gateway route.</p>
+<p>OpenCode:</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;mcp&quot;: {
+    &quot;files&quot;: {
+      &quot;type&quot;: &quot;local&quot;,
+      &quot;command&quot;: [&quot;/run/sendbox-boundary/mcp-broker&quot;, &quot;--&quot;, &quot;/usr/bin/mcp-server&quot;],
+      &quot;enabled&quot;: true
+    },
+    &quot;docs&quot;: {
+      &quot;type&quot;: &quot;remote&quot;,
+      &quot;url&quot;: &quot;http://127.0.0.1:15082/mcp/docs&quot;,
+      &quot;oauth&quot;: false
+    }
+  }
+}</code></pre>
+<p>Codex:</p>
+<pre tabindex="0"><code class="language-toml">[mcp_servers.files]
+command = &quot;/run/sendbox-boundary/mcp-broker&quot;
+args = [&quot;--&quot;, &quot;/usr/bin/mcp-server&quot;]
+
+[mcp_servers.docs]
+url = &quot;http://127.0.0.1:15082/mcp/docs&quot;</code></pre>
+<p>Claude/Copilot JSON uses <code>mcpServers</code> or <code>servers</code> with the same <code>command</code> and
+<code>args</code>. Gemini uses <code>mcpServers</code> and <code>httpUrl</code> for Streamable HTTP; legacy SSE is
+not admitted. Client tool-selection settings can narrow discovery but cannot
+expand signed server/tool policy.</p>
+<p>Hierarchical stdio servers receive no workload secrets by default. Explicit
+environment authentication selects only named, already-delivered references:</p>
+<pre tabindex="0"><code class="language-yaml">policy:
+  boundaries:
+    tool_calls:
+      servers:
+        files:
+          transport: stdio
+          command: [/usr/bin/mcp-server]
+          authorization:
+            method: environment
+            secrets: [MCP_TOKEN]
+          tools:
+            default_action: deny
+            allowlist: [read_file, list_directory]
+        docs:
+          transport: streamable_http
+          url: https://mcp.example.com/mcp
+          http:
+            allowed_auth_methods: [bearer]
+            authorization:
+              bearer_secret: REMOTE_MCP_TOKEN
+          tools:
+            default_action: deny
+            allowlist: [search_docs]
+secrets: [MCP_TOKEN]</code></pre>
+<p>The remote bearer reference must not appear in top-level <code>secrets</code>; it is
+delivered only to the trusted gateway. HTTP authentication supports <code>none</code> and
+<code>bearer</code>; stdio supports no authentication or explicitly selected <code>environment</code>
+references. OAuth and caller-supplied credential/header helpers are rejected.
+Legacy flat stdio policies retain their old global environment compatibility;
+use hierarchical policies for per-server credential partitions.</p>
+<p>Server identity, authentication choice, exact command, and tool rules are
+immutable signed policy. Tool deny rules win, discovery is filtered, and calls
+are checked again with mandatory redacted audit. Agent descendants remain
+VM-contained even when using built-in tools; recursive descendant argv
+authorization is not claimed. See <a href="../mcp-inspection/">MCP inspection</a>.</p>
+<h2 id="optional-guest-syscall-tracing">Optional guest syscall tracing</h2>
+<pre tabindex="0"><code class="language-yaml">observability:
+  syscall_tracing: true</code></pre>
+<p>Tracing is disabled by default. When requested, Apple/Kata bootstrap verifies
+the signed BPF object and starts a mandatory tracer before execution. The
+tracer depends on armed egress, and Exec depends on the tracer; shutdown reverses
+that order. A cgroup-array descriptor includes execution leaves and their
+descendants without observing unrelated guest processes.</p>
+<p>Missing BTF, tracepoints, loading/attachment privileges, artifact verification,
+or mandatory tracer readiness fails the session. BPF capabilities are held by
+trusted guest services only; agent capabilities remain empty.</p>
+<p>The root-only guest log is <code>/var/log/sendbox/syscalls.jsonl</code>, capped at 16 MiB.
+An authenticated, terminal-only, single-use report is independently verified
+and persisted at
+<code>~/.sendbox/run/sessions/&lt;session-id&gt;/syscall-trace-report.json</code> with mode <code>0600</code>.
+It contains architecture, syscall counts, up to 256 argument-free samples,
+sampling counts, log-limit status, and kernel/userspace/decode loss counters.
+It contains no syscall arguments, command argv, paths, payloads, or credentials.</p>
+<p>Tracing is observation, not authorization, and bounded sampling is not a
+complete forensic transcript. Loss and log limits are explicit. Hyperlight has
+no Linux guest kernel or persistent broker composition and rejects tracing,
+interactive sessions, MCP, and full egress features rather than downgrading them.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/cli-agents.md"><code>docs/cli-agents.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/cli-agents.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../interactive-sessions/"><span class="pager-label">Previous</span> Interactive sessions</a>
+<a class="pager-next" href="../integrations/"><span class="pager-label">Next</span> Integrations</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="./" aria-current="page">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

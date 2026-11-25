@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SendBox | Run coding agents in dedicated VMs</title>
+  <meta name="description" content="SendBox runs coding agents in dedicated Linux VMs on macOS and Linux, with explicit policies for files, network, credentials and MCP tools. SendBox Fleet adds shared governance for teams.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="SendBox | Run coding agents in dedicated VMs">
+  <meta property="og:description" content="Give your coding agent a workspace, not your whole machine. Open-source VM isolation and policy for CLI agents, plus shared governance for teams.">
+  <meta property="og:url" content="https://sendbox.synctune.it/">
+  <link rel="canonical" href="https://sendbox.synctune.it/">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+<!-- build:header -->
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="./" aria-current="page"><img src="assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="sendbox/">SendBox docs</a></li>
+        <li><a href="fleet/">Fleet docs</a></li>
+        <li><a href="contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<!-- /build:header -->
+<main id="main">
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="wrap hero-inner">
+      <div>
+        <p class="eyebrow">Open-source sandboxing for coding agents</p>
+        <h1 id="hero-title">Give your coding agent a <span>workspace</span>, not your whole machine.</h1>
+        <p class="lede">SendBox runs coding agents in dedicated Linux VMs on macOS and Linux. Keep your terminal workflow while explicitly choosing the files, network destinations, credentials and MCP tools a session can use.</p>
+        <p class="muted">SendBox Fleet adds shared governance for teams: signed policy profiles, credential grants and a central audit log.</p>
+        <p class="actions"><a class="button" href="sendbox/overview/#quick-start">Get started</a> <a class="button secondary" href="sendbox/">Read the docs</a></p>
+      </div>
+      <figure class="hero-figure">
+        <pre class="terminal" tabindex="0"><span class="comment"># From your project directory</span>
+<span class="prompt">$</span> sendbox init --project . --agent claude
+<span class="prompt">$</span> sendbox policy validate --config .sendbox.yaml
+<span class="prompt">$</span> sendbox run --interactive \
+    --config .sendbox.yaml \
+    --image "$WORKLOAD_IMAGE" \
+    --bundle "$GUEST_DIR/bundle" \
+    --trust-root "$GUEST_DIR/release-public.key" \
+    -- /usr/local/bin/claude</pre>
+        <figcaption class="muted">Create a policy, validate it, then start the agent in its own VM.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section wrap" aria-labelledby="projects-title">
+    <div class="section-heading">
+      <h2 id="projects-title">Two projects, one boundary</h2>
+      <p>Use SendBox on its own for a single developer or runner. Add SendBox Fleet when several people and hosts need to share policy, grants and audit evidence.</p>
+    </div>
+    <div class="products">
+      <article class="product" aria-labelledby="sendbox-title">
+        <div class="product-title"><img src="assets/logos/sendbox.svg" alt="" width="64" height="64"><h3 id="sendbox-title">SendBox</h3></div>
+        <p>An open-source Rust CLI for running coding agents in dedicated Linux VMs, through Apple Containerization on macOS and Kata Containers on Linux.</p>
+        <ul>
+          <li>One reviewable YAML policy for commands, network destinations, credentials and MCP tools.</li>
+          <li>Workspace snapshots, diffs, failure rollback and tamper-evident lifecycle records.</li>
+          <li>Interactive terminal sessions, or headless runs with JSON events for scripts and CI.</li>
+        </ul>
+        <p class="links"><a href="sendbox/overview/">Overview</a> <a href="sendbox/installation/">Installation</a> <a href="sendbox/">All SendBox docs</a> <a href="https://github.com/sendbox-dev/sendbox">Source</a></p>
+      </article>
+      <article class="product" aria-labelledby="fleet-title">
+        <div class="product-title"><img src="assets/logos/sendbox-fleet.svg" alt="" width="64" height="64"><h3 id="fleet-title">SendBox Fleet</h3></div>
+        <p>The shared governance service for SendBox governed sessions. Provider credentials never reach it; they stay in the SendBox host broker.</p>
+        <ul>
+          <li>Operator-signed policy profiles shared across users and hosts, with project-scoped roles.</li>
+          <li>Session admission, credential grants, revocation and approved, expiring exceptions.</li>
+          <li>OpenID Connect sign-in and a hash-chained audit log with signed, anchored chain heads.</li>
+        </ul>
+        <p class="links"><a href="fleet/overview/">Overview</a> <a href="fleet/deployment/">Deployment</a> <a href="fleet/">All Fleet docs</a> <a href="https://github.com/sendbox-dev/sendbox-fleet">Source</a></p>
+      </article>
+    </div>
+  </section>
+
+  <section class="section wrap" aria-labelledby="features-title">
+    <div class="section-heading">
+      <h2 id="features-title">What a session gets, and what it doesn't</h2>
+      <p>An agent needs to edit code, run commands and reach its model provider. It doesn't need everything else on your laptop or runner.</p>
+    </div>
+    <ul class="features">
+      <li><h3>VM-backed isolation</h3><p>A dedicated guest kernel, not a workload sharing the host kernel.</p></li>
+      <li><h3>Explicit workspace scope</h3><p>Share one project, or opt into a multi-repository workspace. Your home directory isn't mounted automatically.</p></li>
+      <li><h3>Deny-first networking</h3><p>Allowed domains only. Direct external agent traffic and UDP/QUIC are blocked.</p></li>
+      <li><h3>Scoped credentials</h3><p>Vault-backed secrets with separate GitHub, Copilot, MCP and registry paths, masked in output.</p></li>
+      <li><h3>MCP tool policies</h3><p>Admit exact local or remote servers and allow or deny tools per server.</p></li>
+      <li><h3>Package checks</h3><p>An optional npm proxy verifies and inspects packages before releasing their bytes.</p></li>
+      <li><h3>Snapshots and audit</h3><p>Before and after snapshots, diffs and tamper-evident lifecycle records.</p></li>
+      <li><h3>GitHub write controls</h3><p>Branch guards, or Safe Outputs for bounded writes without an agent write token.</p></li>
+    </ul>
+    <div class="callout"><p>An unavailable runtime or unsupported capability is an error, never a fallback to running on the host. Read the <a href="sendbox/security-model/">security model</a> and the <a href="sendbox/overview/#limitations-and-security-expectations">limitations</a> for what isolation does and doesn't cover.</p></div>
+  </section>
+
+  <section class="section wrap" aria-labelledby="fit-title">
+    <div class="section-heading">
+      <h2 id="fit-title">How they fit together</h2>
+      <p>Both projects share the <code>sendbox-governance</code> contract. A host can govern sessions locally or through a shared Fleet service.</p>
+    </div>
+    <div class="fit">
+      <div class="fit-card">
+        <h3>Standalone and local governance</h3>
+        <p>Install the SendBox CLI and a runtime, generate <code>.sendbox.yaml</code> for a project and start sessions. Operators can require signed policy profiles and keep model provider keys on the host with <a href="sendbox/architecture/governed-sessions/">governed sessions</a>, using a grant authority that runs in process.</p>
+      </div>
+      <div class="fit-card">
+        <h3>Shared governance with Fleet</h3>
+        <p>Point the host's governance configuration at a Fleet service. Fleet authenticates people and CI, enforces project roles, admits sessions, issues and checks grants, and keeps the central audit log. Follow the <a href="fleet/deployment/">deployment guide</a> to run it with PostgreSQL and your identity provider.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section wrap" aria-labelledby="agents-title">
+    <div class="section-heading">
+      <h2 id="agents-title">Bring the agent you already use</h2>
+      <p>Init profiles set the agent's entry command and initial inference hosts. They don't install the agent or log you in; your digest-pinned workload image provides the Linux agent and its tools.</p>
+    </div>
+    <ul class="agents">
+      <li>Moguri</li>
+      <li>Claude Code</li>
+      <li>OpenAI Codex CLI</li>
+      <li>GitHub Copilot CLI</li>
+      <li>Gemini CLI</li>
+      <li>OpenCode</li>
+      <li>Custom CLI agents and programs</li>
+    </ul>
+    <p><a href="sendbox/cli-agents/">Agent profiles, credentials and networking</a></p>
+  </section>
+
+  <section class="section wrap" aria-labelledby="start-title">
+    <div class="section-heading">
+      <h2 id="start-title">Get started</h2>
+      <p>SendBox supports macOS 26+ on Apple silicon and Linux on x86_64 or aarch64 with hardware or nested virtualization.</p>
+    </div>
+    <ol class="steps">
+      <li>
+        <h3>Install SendBox and a runtime</h3>
+        <p>Install the CLI from the Homebrew tap, or download and verify a release. Then set up <a href="sendbox/apple-runtime/">Apple Containerization</a> on macOS or <a href="sendbox/kata-containers/">Kata Containers</a> on Linux, and stage the signed guest bundle.</p>
+        <pre class="terminal" tabindex="0"><span class="prompt">$</span> brew install mbianchidev/tap/sendbox</pre>
+      </li>
+      <li>
+        <h3>Configure your project and agent</h3>
+        <p>Generate a private <code>.sendbox.yaml</code>, store credentials outside shell history and validate the policy before starting a VM.</p>
+        <pre class="terminal" tabindex="0"><span class="prompt">$</span> sendbox init --project . --agent claude
+<span class="prompt">$</span> sendbox secrets add ANTHROPIC_API_KEY
+<span class="prompt">$</span> sendbox policy validate --config .sendbox.yaml</pre>
+      </li>
+      <li>
+        <h3>Start a session</h3>
+        <p>Run the agent interactively with your workload image, or drop <code>--interactive</code> for headless automation. See the <a href="sendbox/overview/#3-start-a-terminal-session">full quick start</a> and the <a href="sendbox/cli-reference/">CLI reference</a>.</p>
+      </li>
+    </ol>
+    <div class="callout"><p>Before installing a release, check the <a href="sendbox/installation/#dependency-security-status">dependency security status</a> and <a href="sendbox/installation/#stable-homebrew-updates">Homebrew update notes</a> in the installation guide.</p></div>
+  </section>
+
+  <section class="section wrap" aria-labelledby="contribute-title">
+    <div class="section-heading">
+      <h2 id="contribute-title">Build it with us</h2>
+      <p>Both projects are Apache-2.0 and developed in the open. Start with the contribution guides, and report vulnerabilities privately.</p>
+    </div>
+    <p class="actions"><a class="button" href="contribute/">Contribute</a> <a class="button secondary" href="https://github.com/sendbox-dev">sendbox-dev on GitHub</a></p>
+  </section>
+</main>
+<!-- build:footer -->
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="contribute/">Contribute</a></p>
+  </div>
+</footer>
+<!-- /build:footer -->
+</body>
+</html>

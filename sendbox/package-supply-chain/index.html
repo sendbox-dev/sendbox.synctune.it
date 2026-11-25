@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Package supply-chain proxy | SendBox docs</title>
+  <meta name="description" content="Verify and inspect npm packages before their bytes reach the workload.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Package supply-chain proxy | SendBox docs">
+  <meta property="og:description" content="Verify and inspect npm packages before their bytes reach the workload.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/package-supply-chain/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/package-supply-chain/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Package supply-chain proxy</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Runtimes and operations</p>
+<h1 id="package-supply-chain-proxy">Package supply-chain proxy</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#enable-the-npm-proxy">Enable the npm proxy</a></li>
+<li><a href="#private-registries">Private registries</a></li>
+<li><a href="#verification-and-inspection">Verification and inspection</a></li>
+<li><a href="#finding-policy-and-false-positives">Finding policy and false positives</a></li>
+<li><a href="#cache-and-invalidation">Cache and invalidation</a></li>
+<li><a href="#reports-and-cli">Reports and CLI</a></li>
+<li><a href="#configuration-reference">Configuration reference</a></li>
+<li><a href="#future-adapter-contract">Future adapter contract</a></li>
+</ol>
+</nav>
+<p>SendBox can place an npm-compatible registry proxy between a persistent guest
+workload and its configured upstream registry. The proxy downloads packages
+into quarantine, verifies and scans them without executing package code, and
+serves artifact bytes only after an explicit <code>allow</code> verdict.</p>
+<p>The npm adapter is production-supported on Apple and Kata persistent runtimes.
+Hyperlight rejects package analysis because its one-shot runtime cannot compose
+the trusted proxy, egress gateways, persistent cache, and authenticated report
+retrieval. PyPI, Cargo, Go modules, Maven, and OCI are extension contracts only;
+their adapters are not implemented yet.</p>
+<h2 id="enable-the-npm-proxy">Enable the npm proxy</h2>
+<p>Add <code>policy.packages</code> to the sandbox configuration:</p>
+<pre tabindex="0"><code class="language-yaml">policy:
+  network:
+    default_action: deny
+    allow_dns: true
+    allowed_domains:
+      - registry.npmjs.org
+    blocked_domains: []
+
+  packages:
+    enabled: true
+    registries:
+      - ecosystem: npm
+        url: https://registry.npmjs.org/
+        allow_insecure_http: false
+        signature: if_present
+        provenance: if_present
+    default_finding_action: deny
+    finding_actions:
+      - finding: lifecycle_script
+        action: deny
+      - finding: subprocess_api
+        action: deny
+    exceptions: []
+    allow_legacy_sha1: true
+    limits:
+      max_metadata_bytes: 16777216
+      max_download_bytes: 268435456
+      max_unpacked_bytes: 1073741824
+      max_entry_bytes: 67108864
+      max_entries: 100000
+      max_path_bytes: 4096
+      max_depth: 64
+      max_source_scan_bytes: 8388608
+      request_timeout_secs: 120
+      scan_timeout_secs: 30
+      max_report_findings: 4096
+      max_report_bytes: 98304
+    cache:
+      enabled: true
+      max_bytes: 4294967296
+      max_entries: 100000
+      retain_quarantined: false</code></pre>
+<p>The npm-first implementation requires exactly one npm registry. Its URL must
+also be admitted by <code>policy.network</code>; SendBox uses the original network policy
+for the trusted upstream gateway and derives a workload policy that denies the
+registry directly.</p>
+<p>At launch, SendBox sets both uppercase and lowercase npm registry variables to
+the workload-facing loopback proxy and sets npm's <code>ignore-scripts</code> option in
+both forms. A workload-supplied npm registry override does not grant direct
+network access to the configured upstream. The proxy rewrites every packument
+tarball URL to an opaque local artifact route, so npm never receives the
+upstream tarball URL.</p>
+<h2 id="private-registries">Private registries</h2>
+<p>Store the raw npm token in the SendBox vault and reference its name from the
+registry policy:</p>
+<pre tabindex="0"><code class="language-bash">sendbox secrets add PRIVATE_NPM_TOKEN</code></pre>
+<pre tabindex="0"><code class="language-yaml">policy:
+  packages:
+    enabled: true
+    registries:
+      - ecosystem: npm
+        url: https://npm.example.internal/
+        credential_secret: PRIVATE_NPM_TOKEN
+        allow_insecure_http: false
+        signature: if_present
+        provenance: if_present
+    # Remaining package fields omitted here; use the annotated example config.
+
+secrets:
+  - DATABASE_URL</code></pre>
+<p><code>credential_secret</code> is a vault reference, not an environment-variable
+declaration. It must not also appear in the top-level <code>secrets</code> list. The host
+resolves the token into the authenticated registry bootstrap, the proxy builds
+the upstream bearer header, and debug output redacts the value. The workload
+does not receive the token in its environment, launch secret envelope,
+filesystem, report, or audit record.</p>
+<h2 id="verification-and-inspection">Verification and inspection</h2>
+<p>Artifact delivery follows this order:</p>
+<ol>
+<li>Resolve package identity and versions from bounded upstream metadata.</li>
+<li>Bind rewritten artifact routes to package, version, source URL, declared
+integrity, and the resolved metadata revision.</li>
+<li>Download into a private, content-addressed quarantine store through the
+registry-only SOCKS gateway.</li>
+<li>Verify package identity, the strongest declared npm SRI value, and the
+legacy <code>dist.shasum</code> when <code>allow_legacy_sha1</code> permits it.</li>
+<li>Verify advertised npm registry signatures against bounded registry key
+metadata. <code>signature: required</code> also rejects packages with no signature.</li>
+<li>Verify advertised npm provenance offline against the pinned Sigstore trust
+root, including the SLSA subject, Fulcio chain, SCT, DSSE signature, Rekor
+entry, inclusion proof, checkpoint, signed entry timestamp, and integrated
+time. <code>provenance: required</code> rejects packages with no provenance.</li>
+<li>Enumerate gzip/tar content without extracting or executing it. Enforce
+compressed, unpacked, per-entry, entry-count, path, depth, source-scan, and
+time limits.</li>
+<li>Reject unsafe paths and links, device/FIFO/sparse/unsupported entries,
+unexpected executable bits, native add-ons, prebuilt or embedded
+executables, lifecycle scripts, and high-risk subprocess or shell APIs.</li>
+<li>Evaluate normalized findings deterministically and either promote the blob
+to the approved cache, deny it, or retain only the configured quarantine
+evidence.</li>
+</ol>
+<p>Integrity failures, identity mismatches, signature or provenance failures,
+unsupported content, scanner failures, timeouts, decompression excess, and
+oversized entries are always fail-closed. Policy rules and exceptions cannot
+change those finding kinds to <code>allow</code> or <code>quarantine</code>.</p>
+<p>Static inspection is a policy signal, not proof that arbitrary package code is
+safe. SendBox never executes package code during metadata retrieval, download,
+cache population, or default analysis.</p>
+<h2 id="finding-policy-and-false-positives">Finding policy and false positives</h2>
+<p><code>default_finding_action</code> applies when a finding has no entry in
+<code>finding_actions</code>. A <code>quarantine</code> verdict withholds artifact bytes just like a
+deny verdict but distinguishes packages that require human review.</p>
+<p>Use this workflow for a suspected false positive:</p>
+<ol>
+<li>Run the workload and inspect the denied record with
+<code>sendbox package report</code>.</li>
+<li>Independently verify the package source and the exact <code>sha256:</code> or
+<code>sha512:</code> artifact digest in the report.</li>
+<li>Add the smallest exception: one ecosystem, exact package, optional exact
+version, exact artifact digest, and only the reviewed finding kinds.</li>
+<li>Prefer <code>quarantine</code> while investigating. Use <code>allow</code> only after review.</li>
+<li>Re-run the workload. A changed artifact digest, policy digest, scanner
+version, or trust-metadata digest forces new analysis.</li>
+</ol>
+<p>Example:</p>
+<pre tabindex="0"><code class="language-yaml">policy:
+  packages:
+    exceptions:
+      - ecosystem: npm
+        package: reviewed-package
+        version: 1.2.3
+        artifact_digest: sha512:&lt;lowercase-hex&gt;
+        findings:
+          - subprocess_api
+        action: allow</code></pre>
+<p>Never create broad package-name-only exceptions. Digest binding prevents a
+later release or republished artifact from inheriting an old approval.</p>
+<h2 id="cache-and-invalidation">Cache and invalidation</h2>
+<p>The host mounts a private package cache into the trusted guest services. Cache
+keys include:</p>
+<ul>
+<li>ecosystem and verified artifact digest;</li>
+<li>scanner version;</li>
+<li>canonical package-policy digest; and</li>
+<li>trust-metadata digest.</li>
+</ul>
+<p>Per-route filesystem locks deduplicate concurrent requests and cross-session
+analysis. A policy, scanner, artifact, or trust change therefore misses the old
+verdict automatically. Approved blobs are reusable only with an exact key
+match. Rejected artifact bytes are deleted by default;
+<code>cache.retain_quarantined</code> controls whether quarantined bytes are retained.
+<code>cache.enabled: false</code> forces analysis for every request.</p>
+<h2 id="reports-and-cli">Reports and CLI</h2>
+<p>After the workload reaches its terminal response, the host requests the report
+once over the authenticated control channel, verifies its digest and canonical
+schema, and writes it atomically with mode <code>0600</code>:</p>
+<pre tabindex="0"><code class="language-text">~/.sendbox/run/sessions/&lt;session-id&gt;/package-security-report.json</code></pre>
+<p>Each record contains package identity, upstream source, artifact digest,
+verification evidence, findings, policy digest, scanner version, verdict,
+cache outcome, and requesting session. Secrets are never included.</p>
+<pre tabindex="0"><code class="language-bash"># Latest completed package-enabled session
+sendbox package status
+sendbox package report
+
+# A specific 32-character session ID
+sendbox package status --session &lt;session-id&gt; --json
+sendbox package report --session &lt;session-id&gt; --json</code></pre>
+<p><code>sendbox run --json</code> includes a <code>package_report</code> summary with the path, digest,
+proxy state, record count, and allow/deny/quarantine totals. The host also
+records a secret-free <code>package_security_report_persisted</code> provenance audit
+event. Missing, oversized, non-canonical, symlinked, incorrectly owned, or
+digest-mismatched reports fail the package-enabled run.</p>
+<h2 id="configuration-reference">Configuration reference</h2>
+<div class="table-scroll" role="group" aria-label="Configuration reference table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Key</th><th scope="col">Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>enabled</code></td><td>Enable the mandatory package proxy for the run</td></tr>
+<tr><td><code>registries</code></td><td>Allowed upstream registries and evidence requirements</td></tr>
+<tr><td><code>registries[].credential_secret</code></td><td>Vault reference delivered only to the trusted proxy</td></tr>
+<tr><td><code>signature</code>, <code>provenance</code></td><td><code>if_present</code> verifies advertised evidence; <code>required</code> also rejects absence</td></tr>
+<tr><td><code>default_finding_action</code></td><td>Default <code>allow</code>, <code>deny</code>, or <code>quarantine</code> decision</td></tr>
+<tr><td><code>finding_actions</code></td><td>Per-finding overrides; fail-closed findings must remain <code>deny</code></td></tr>
+<tr><td><code>exceptions</code></td><td>Exact digest-bound package exceptions</td></tr>
+<tr><td><code>allow_legacy_sha1</code></td><td>Permit verification of npm's legacy SHA-1 <code>dist.shasum</code></td></tr>
+<tr><td><code>limits</code></td><td>Metadata, artifact, archive, scan, timeout, and report bounds</td></tr>
+<tr><td><code>limits.max_report_bytes</code></td><td>Hard-bounded authenticated report size; maximum 98304</td></tr>
+<tr><td><code>cache</code></td><td>Persistent approved-blob and verdict cache controls</td></tr>
+</tbody>
+</table>
+</div>
+<p>All package-policy structures reject unknown YAML fields.</p>
+<h2 id="future-adapter-contract">Future adapter contract</h2>
+<p>The core policy engine has no npm metadata dependency. <code>RegistryAdapter</code>
+separates these ecosystem operations:</p>
+<ul>
+<li>identify the ecosystem and advertised capabilities;</li>
+<li>resolve versions through a bounded <code>UpstreamClient</code>;</li>
+<li>rewrite client-facing metadata;</li>
+<li>fetch the selected artifact;</li>
+<li>fetch registry keys, trust roots, and provenance bundles;</li>
+<li>verify artifact integrity, signatures, and provenance through a separate
+<code>PackageProvenanceVerifier</code>;</li>
+<li>normalize the package manifest;</li>
+<li>enumerate archive entries or image layers; and</li>
+<li>emit normalized risk findings for the shared verdict engine.</li>
+</ul>
+<p>Adapters declare whether they rewrite metadata, support signatures, support
+provenance, or handle layered artifacts. The expected extension mapping is:</p>
+<div class="table-scroll" role="group" aria-label="Future adapter contract table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Ecosystem</th><th scope="col">Resolution and metadata</th><th scope="col">Artifact model</th><th scope="col">Verification and risk inputs</th></tr></thead>
+<tbody>
+<tr><td>PyPI</td><td>Simple/JSON project and release metadata; rewrite file links</td><td>wheel ZIP or source archive</td><td>hashes, attestations, <code>METADATA</code>, entry and build-script risks</td></tr>
+<tr><td>Cargo</td><td>sparse index/version records; rewrite crate download</td><td><code>.crate</code> gzip/tar</td><td>index checksum, <code>Cargo.toml</code>, build scripts, native/executable content</td></tr>
+<tr><td>Go modules</td><td>module proxy list/info/mod/zip endpoints</td><td>module ZIP plus <code>go.mod</code></td><td>module checksum database evidence, path rules, generators and executable content</td></tr>
+<tr><td>Maven</td><td>repository metadata and POM resolution</td><td>JAR/ZIP and related artifacts</td><td>checksums, detached signatures, POM plugins, native/executable content</td></tr>
+<tr><td>OCI</td><td>manifest or index resolution and blob routing</td><td>ordered filesystem layers</td><td>descriptor digests, signatures/attestations, whiteouts, layer paths and executables</td></tr>
+</tbody>
+</table>
+</div>
+<p>Future adapters should reuse these contracts rather than add ecosystem logic to
+the cache, policy evaluator, report schema, or egress service.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/package-supply-chain.md"><code>docs/package-supply-chain.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/package-supply-chain.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../dns-cold-start/"><span class="pager-label">Previous</span> Cold-start DNS diagnostics</a>
+<a class="pager-next" href="../mcp-inspection/"><span class="pager-label">Next</span> MCP inspection</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="./" aria-current="page">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

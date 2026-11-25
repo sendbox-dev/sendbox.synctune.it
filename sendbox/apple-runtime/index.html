@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apple runtime | SendBox docs</title>
+  <meta name="description" content="Apple Containerization on macOS, supported container CLI versions and qualification status.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Apple runtime | SendBox docs">
+  <meta property="og:description" content="Apple Containerization on macOS, supported container CLI versions and qualification status.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/apple-runtime/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/apple-runtime/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Apple runtime</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Runtimes and operations</p>
+<h1 id="apple-runtime-adapter">Apple runtime adapter</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#requirements">Requirements</a></li>
+<li><a href="#lifecycle-and-control-transport">Lifecycle and control transport</a></li>
+<li><a href="#qualification">Qualification</a></li>
+<li><a href="#limitations">Limitations</a></li>
+<li><a href="#guest-readiness-troubleshooting">Guest readiness troubleshooting</a></li>
+</ol>
+</nav>
+<p><code>sendbox-runtime-apple</code> is the production Rust <code>RuntimeProvider</code> for the
+official Apple <code>container</code> CLI and service. It invokes the executable directly
+with exact argv, clears the inherited environment, supplies <code>PATH</code>, <code>LANG</code>,
+<code>LC_ALL</code>, the host <code>HOME</code>/<code>USER</code>/<code>TMPDIR</code> needed by the registered service, and
+explicitly marked secret variables, and never invokes a shell or language
+bridge. Supplying the host service environment does not mount the host home
+inside the VM.</p>
+<h2 id="requirements">Requirements</h2>
+<ul>
+<li>macOS on arm64</li>
+<li>official <code>container</code> CLI and API server with exactly matching versions:
+<strong>0.10.0 / 0.10.0</strong> or <strong>1.7.1 / 1.7.1</strong></li>
+<li>a root-owned executable, root-owned/non-writable bundle and optional kernel,
+and a root-owned mode <code>0444</code> Ed25519 public key</li>
+<li>the <code>container</code> service already registered and running</li>
+<li>a signed arm64 guest bundle whose signature, trust-root ID, host/guest
+versions, artifact digests, modes, owners, architecture, and release sequence
+pass <code>sendbox-bundle</code> verification</li>
+<li>an explicit Linux arm64 image and any configured kernel, mounts, network,
+DNS, CPU, memory, and ulimit values</li>
+</ul>
+<p>The workload image must include <code>nft</code> and its runtime libraries, and the guest
+kernel must support the mandatory
+<a href="../installation/#workload-image-versus-guest-bundle">egress enforcement prerequisites</a>.
+A plain Alpine base image does not include <code>nftables</code>.
+Entrypoint and working-directory paths must also be symlink-free; see the
+<a href="../installation/#workload-image-versus-guest-bundle">workload image requirements</a>.</p>
+<p>The 1.7.1 adapter changes are source compatibility, not a new SendBox release
+or completed consumer qualification. Released SendBox v0.2.5 does not contain
+them. Keep using independently verified, compatible released host/guest bytes
+for production; a source build or portable fixture pass is not equivalent.</p>
+<p><code>setup.sh</code> still installs only the pinned 0.10.0 signed package and verifies its
+SHA-256 digest plus package signature. This compatibility change does not
+update the installer, install 1.7.1, or change the registered service. All
+other versions, prereleases, and mixed CLI/server pairs fail closed.</p>
+<p>Preflight is non-mutating. It queries version, complete command help, and
+<code>container system status --format json</code>. It checks the API server's version and
+<code>container-apiserver</code> identity, not just <code>status: running</code>. The 1.7.1 payload
+must also identify the client as <code>container</code> at the selected CLI version.
+Creation repeats preflight before inspecting/pulling an image or creating a
+container, including when a library caller omitted a separate preflight.
+It never runs <code>container system start</code>, <code>stop</code>, or registration commands.</p>
+<h3 id="executable-and-service-selection">Executable and service selection</h3>
+<p>The production host resolves <code>container</code> in this fixed order, independently of
+the caller's <code>PATH</code>: <code>/usr/local/bin</code>, <code>/opt/homebrew/bin</code>, <code>/usr/bin</code>, <code>/bin</code>.
+It does not skip an older installed executable to find a newer one. Diagnostics
+identify the selected absolute path and observed CLI/server versions. A
+user-owned Homebrew CLI or writable ancestor is still rejected.</p>
+<p><code>AppleRuntimeConfiguration.executable</code> is an explicit library API override.
+<code>SENDBOX_APPLE_CONTAINER_EXECUTABLE</code> configures only the live test below; it is
+not an override for <code>sendbox run</code>. The production CLI currently has no Apple
+executable override. Do not copy an unsigned Homebrew binary into a trusted
+location or relax ownership checks to make preflight pass.</p>
+<p>Apple 1.7.1 discovers plugins from the <strong>running server's</strong> <code>installRoot</code>:
+<code>libexec/container-plugins</code> first, then <code>libexec/container/plugins</code> beneath that
+root. The official signed package installs <code>bin/container</code>,
+<code>bin/container-apiserver</code>, and <code>libexec/container/plugins/&lt;plugin&gt;/</code> under
+<code>/usr/local</code>; each plugin has its own <code>bin/</code> executable and <code>config.toml</code>.
+Apple's <code>--install-root</code> option belongs to <code>container system start</code>, not a
+per-container command. SendBox clears inherited <code>CONTAINER_*</code> variables and
+does not offer a plugin-root override or restart services.</p>
+<p>In the compatibility investigation, <code>/usr/local/bin/container</code> was 0.10.0
+while the API server and Homebrew CLI were 1.7.1. The old CLI returned an empty
+network list and failed creation with <code>builtin network is not present</code>; the
+matching 1.7.1 CLI could see the existing built-in <code>default</code> NAT network. That
+error was not evidence that a network should be created or reconfigured.
+An operator must review and provision a matching trusted CLI explicitly.</p>
+<h3 id="reviewed-json-contracts">Reviewed JSON contracts</h3>
+<p>The 1.7.1 contracts were reviewed against upstream
+<a href="https://github.com/apple/container/tree/a15b46097aa4c2325da13c1fb5192b9274aab083"><code>a15b46097aa4c2325da13c1fb5192b9274aab083</code></a>:</p>
+<ul>
+<li>Image inspection accepts the 0.10.0 top-level <code>name</code>/<code>index.digest</code> layout
+and the 1.7.1 <code>configuration.name</code>/<code>configuration.descriptor.digest</code> layout.
+Exactly one image is required. The 1.7.1 raw-hex <code>id</code> must agree with the
+canonical SHA-256 descriptor. A requested digest must match that descriptor,
+never a tag, display name, annotation, or platform-variant digest. Inspection
+is repeated after a pull; malformed or truncated output fails.</li>
+<li>Container inspection requires exactly one record bound to the owned
+<code>configuration.id</code>. It reads the 0.10.0 top-level status string or the
+1.7.1 <code>status.state</code> plus matching top-level <code>id</code>. Missing, unknown, or
+ambiguous state is an error, never cached <code>running</code> health or a recursively
+discovered label.</li>
+<li>With the default network on 1.7.1, non-mutating
+<code>network inspect default</code> must identify <code>id</code> and <code>configuration.name</code> as
+<code>default</code>, mode <code>nat</code>, plugin <code>container-network-vmnet</code>, and label
+<code>com.apple.container.resource.role=builtin</code>. This is a prerequisite check,
+not network creation, migration, or an egress-policy exception.</li>
+</ul>
+<p>Apple 1.7.1 also restricts the default Linux capability set. A root UID alone
+cannot program nftables: the reviewed default mask lacks <code>CAP_NET_ADMIN</code>.
+The adapter explicitly grants that capability to the signed trusted guest
+containment services. Only when syscall tracing is explicitly enabled does it
+also grant guest-only <code>CAP_SYS_ADMIN</code>, needed by the reviewed guest to mount
+tracefs and attach BPF programs. That broader trusted-service capability is
+absent when tracing is disabled. It never requests <code>ALL</code> or a privileged
+container. The non-root workload still runs through the signed
+launcher with empty capability sets, seccomp and deny-first command/network
+policy; these supervisor grants are not workload grants. The 0.10.0 argv is
+unchanged because that CLI does not offer <code>--cap-add</code>.</p>
+<h2 id="lifecycle-and-control-transport">Lifecycle and control transport</h2>
+<p>The adapter checks or pulls the image according to policy, creates a named
+container with the verified bundle mounted read-only, starts it, parses inspect
+status, supports bounded log following, maps signals, stops with a grace
+period, and deletes only the owned container. Workload exec is rejected;
+<code>container exec</code> is reserved for bootstrap/control operations because workload
+commands must pass through the authenticated guest broker.</p>
+<p>Provider-neutral create requests are applied at container creation: dynamic
+environment, mounts, DNS servers, CPU, memory, working directory, and labels
+override or extend adapter defaults. Memory must be expressed in whole MiB, and
+conflicting no-DNS/DNS settings fail before the CLI is invoked.</p>
+<p>Both reviewed versions advertise <code>--publish-socket</code>, but no live VM evidence
+establishes its replacement, ownership, cancellation, or bidirectional semantics.
+The production adapter therefore <strong>does not advertise published Unix sockets</strong>.
+It uses another official CLI surface:</p>
+<ol>
+<li>The provider combines the per-session secret with the signed trust metadata,
+hardening requirements, and broker policy in the shared typed guest-bootstrap
+schema, then <code>container exec --interactive</code> installs it as a root-created,
+mode <code>0400</code> guest file. Before completing injection, the signed helper moves
+init into the trusted runtime cgroup without enabling any controllers.</li>
+<li>A detached bootstrap/control exec starts the verified guest supervisor.</li>
+<li>A second interactive exec runs the signed <code>stdio-bridge</code>, which connects to
+the session-unique guest Unix socket and relays raw stdin/stdout.</li>
+<li>The merged SendBox handshake authenticates the byte stream before readiness
+or requests are accepted.</li>
+</ol>
+<p>The bridge process and stream are owned by the provisioned channel and are
+terminated during channel/runtime cleanup. There is no host-global socket,
+daemon, port, or side channel. A real local Unix-stream fixture proves that the
+relay preserves authenticated protocol bytes. The configured live gate proves
+the same path across the Apple VM.</p>
+<h2 id="qualification">Qualification</h2>
+<p>Unit and conformance tests:</p>
+<pre tabindex="0"><code class="language-bash">cargo test -p sendbox-runtime-apple --all-targets</code></pre>
+<p>Live qualification requires a prepared host. The test never mutates service
+registration or service lifecycle:</p>
+<pre tabindex="0"><code class="language-bash">export SENDBOX_APPLE_CONTAINER_LIVE=1
+export SENDBOX_APPLE_CONTAINER_BUNDLE=/absolute/path/to/verified/bundle
+export SENDBOX_APPLE_CONTAINER_PUBLIC_KEY=/absolute/path/to/root.pub
+export SENDBOX_APPLE_CONTAINER_TRUST_ROOT_ID=release-root-v1
+export SENDBOX_APPLE_CONTAINER_MIN_RELEASE_SEQUENCE=1
+export SENDBOX_APPLE_CONTAINER_LIVE_IMAGE=ghcr.io/example/sendbox-base@sha256:...
+# Optional explicit trusted CLI path, for this test only:
+export SENDBOX_APPLE_CONTAINER_EXECUTABLE=/usr/local/bin/container
+cargo test -p sendbox-runtime-apple --test live -- --nocapture</code></pre>
+<p>When <code>SENDBOX_APPLE_CONTAINER_LIVE=1</code>, missing configuration, a stopped service,
+transport failure, authentication failure, or cleanup failure fails the test;
+it is not converted to a skip. The image must already exist locally at its exact
+index digest; the test never pulls it. It mounts only generated fixture data,
+separate from host runtime state, uses unique container and session/socket
+identities, and checks running and stopped inspect states. The primary live
+operation has a 90-second deadline, followed by channel cleanup, stop, and
+targeted delete even after failure. An ordinary test run without the live flag
+does not provide physical qualification evidence.</p>
+<p>The November 11, 2026 investigation first verified mixed-version and
+user-owned-CLI rejection before VM creation. After the operator provisioned the
+official root-owned Apple 1.7.1 CLI, the live gate passed with the already-running
+1.7.1 service and existing default network. A generated production-host Node
+workload also exited successfully with non-root UID, empty workload capability
+sets and <code>NoNewPrivs=1</code>. A separate generated cancellation returned exit 130,
+rolled back its transient write, preserved prior successful output, and removed
+the exact owned VM. No model credentials or live checkout were used.</p>
+<p>These runs used the source-built, dependency-patched host with the unchanged
+reviewed v0.2.5 guest bundle, release sequence 10. They are backend evidence,
+not patched guest or release qualification. New independently reviewed
+compatible host/guest release artifacts and each consumer's exact-image
+execution, cancellation, recovery, accounting, and checkpoint qualification
+remain separate gates.</p>
+<p>Optional syscall tracing remains <strong>unqualified on the inspected default guest
+environment</strong>: guest kernel 6.18.5 exposed neither
+<code>/sys/kernel/tracing</code> nor <code>/sys/kernel/btf/vmlinux</code>. The reviewed tracer failed
+with <code>mounting guest tracefs: No such file or directory</code>, even with the
+explicitly opted-in guest-only <code>CAP_SYS_ADMIN</code>. Prepare a trusted guest/kernel
+exposing tracefs, BTF and the required tracepoints before qualifying this mode.
+Do not silently skip tracing or claim readiness when it was requested. SendBox
+does not install a kernel or restart/reconfigure shared services to fix it.</p>
+<h2 id="limitations">Limitations</h2>
+<ul>
+<li>Only exact matching 0.10.0 and 1.7.1 CLI/server pairs are supported by this
+source. No other version is accepted based on ordering or help similarity.</li>
+<li>The adapter does not start/register/stop the Apple service.</li>
+<li><code>--publish-socket</code>, Rosetta, virtualization passthrough, SSH forwarding, TTY
+mode, and arbitrary workload exec are not advertised.</li>
+<li>Neither reviewed CLI has a hostname option. Container identity remains the
+session-unique container name rather than claiming a separately configured
+kernel hostname.</li>
+<li>Runtime <code>Network</code> capability covers Apple network/DNS provisioning.
+Restrictive policy is a separate signed guest admission: the provider binds
+the authenticated egress policy and delegated execution cgroup parent into
+bootstrap, and Exec cannot start until the guest DNS/SOCKS5 gateway reports
+readiness.</li>
+<li>Bundle and trust-root mounts depend on official CLI bind-mount semantics and
+are fail-closed by guest-side mode, owner, digest, version, and rollback
+checks.</li>
+</ul>
+<h2 id="guest-readiness-troubleshooting">Guest readiness troubleshooting</h2>
+<p>Bootstrap injection moves guest init from <code>/</code> to <code>/sendbox-runtime</code> before
+controller delegation, without changing the cgroup namespace root.
+Guest admission checks the full writable
+cgroup2 mount independently of this membership change. It still rejects
+subtree mounts, read-only mounts, and unrelated init cgroups.</p>
+<p>The v0.2.0 guest incorrectly required init to remain at <code>/</code> after moving it,
+causing the mandatory egress service to exit before authenticated readiness.
+Its execution broker also treated the supervisor's connect/disconnect socket
+health probe as its sole execution connection and exited on the empty request.
+The broker must survive that empty probe without accepting malformed requests
+or weakening peer/session authentication.
+The concurrent stdio relay can also repopulate the root cgroup during controller
+delegation. Startup refreshes and migrates those processes when the kernel returns
+<code>EBUSY</code>, retrying for at most five seconds rather than disabling the controllers.
+Native exec also snapshots init's cgroup before attaching the new process.
+Moving init only during concurrent supervisor startup leaves a window where
+Apple targets the old root after controllers make it a non-leaf. The bootstrap
+injection helpers now establish <code>/sendbox-runtime</code> before returning, so later
+supervisor/control execs use a stable leaf. Controllers are still enabled and
+verified by the supervisor, not by the injection helper.</p>
+<p>In one retained failed run, Apple reported <code>vmexec ... read ack pipe</code> while
+starting the control relay; the guest was locally ready but the relay never
+reached the handshake. Apple 0.10.0 can also wait indefinitely after such a start
+failure. The upstream <a href="https://github.com/apple/container/pull/1289">waiter fix</a>
+is included in 0.11.0. That does not qualify 0.11.0 or every later version;
+this adapter separately reviews exact supported pairs. Do not infer that a
+later successful retry repaired an earlier failed run or upgrade the host
+service as an implicit workaround.</p>
+<p>Replacing only the host CLI cannot correct that guest defect: rebuild and sign
+the guest bundle as well. Host/guest manifest versions must match the binaries,
+and trust-root identity, architecture, release sequence, digests, and ownership
+must still verify. Never edit an installed signed bundle in place.</p>
+<p>A Node <code>fetch</code> error saying <code>Request was cancelled</code> can wrap a proxy failure
+rather than application cancellation. Inspect its nested cause or Undici
+diagnostics: HTTP CONNECT 502 indicates upstream resolution/connection failure;
+403 is a policy denial. Domain policy validates the complete CNAME chain, so
+allowing a public API hostname does not implicitly authorize its canonical
+backend names. Keep those denials intact and require explicit policy approval
+for any additional names.</p>
+<p>For first-request DNS failures, use the credential-free
+<a href="../dns-cold-start/">cold-start diagnostic</a>. It measures a new VM's first
+SOCKS/HTTP request without a lookup, warm-up or application retry, retains
+sanitized resolver failure details, checks deny-first containment, and records
+per-request latency and owned-VM cleanup. A successful later request is not
+proof that the cold request worked.</p>
+<p>If readiness succeeds but launch reports <code>openat2</code>/<code>Symbolic link loop</code>, fix the
+workload image or select its actual regular executable path. For a minimal
+qualification image, the original Alpine base can be extended without relaxing
+the broker:</p>
+<pre tabindex="0"><code class="language-dockerfile">FROM alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+RUN apk add --no-cache nftables \
+    &amp;&amp; cp /bin/busybox /bin/sh.sendbox \
+    &amp;&amp; mv -f /bin/sh.sendbox /bin/sh</code></pre>
+<p>Build without cache and pin the resulting image digest. This image is only a
+minimal shell qualification image; it does not install a coding agent.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/apple-runtime.md"><code>docs/apple-runtime.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/apple-runtime.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../similar-tools/"><span class="pager-label">Previous</span> Similar tools</a>
+<a class="pager-next" href="../kata-containers/"><span class="pager-label">Next</span> Kata Containers</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="./" aria-current="page">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Secrets and credential broker | SendBox docs</title>
+  <meta name="description" content="Status: pre-1.0 production libraries. sendbox-secrets owns host secret storage, explicit legacy migration, ephemeral session envelopes, and pure credential…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Secrets and credential broker | SendBox docs">
+  <meta property="og:description" content="Status: pre-1.0 production libraries. sendbox-secrets owns host secret storage, explicit legacy migration, ephemeral session envelopes, and pure credential…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/secrets-and-credential-broker/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/secrets-and-credential-broker/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Secrets and credential broker</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="secrets-and-credential-broker">Secrets and Credential Broker</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#secret-values-and-names">Secret values and names</a></li>
+<li><a href="#macos-keychain">macOS Keychain</a></li>
+<li><a href="#linux-protected-file-store">Linux protected file store</a></li>
+<li><a href="#session-secret-envelopes">Session secret envelopes</a></li>
+<li><a href="#mcp-gateway-credential-partition">MCP gateway credential partition</a></li>
+<li><a href="#credential-broker-policy-and-listener">Credential broker policy and listener</a></li>
+<li><a href="#guarded-github-repository-authentication">Guarded GitHub repository authentication</a></li>
+<li><a href="#remaining-qualification">Remaining qualification</a></li>
+</ol>
+</nav>
+<p>Status: <strong>pre-1.0 production libraries</strong>. <code>sendbox-secrets</code> owns host secret
+storage, explicit legacy migration, ephemeral session envelopes, and pure
+credential request transformation. <code>sendbox-credentials</code> owns the bounded local
+listener, certificate-verifying HTTPS forwarding, guarded GitHub repository
+authorization, and session-bound agent configuration. Persistent Apple/Kata runs
+wire guarded GitHub, Copilot, and Git SSH credentials through authenticated
+secret envelopes. Generic explicit-base-URL broker rules remain library-only.</p>
+<h2 id="secret-values-and-names">Secret values and names</h2>
+<p><code>SecretValue</code> owns zeroizing bytes and always redacts <code>Debug</code> and <code>Display</code>.
+Callers must explicitly use <code>expose_secret()</code> at the final trusted boundary.
+Names are non-empty, NFC-normalized UTF-8 without control characters and are
+bounded to 128 bytes. Values are bounded to 64 KiB.</p>
+<p>The <code>SecretStore</code> contract has distinct create and update operations plus
+retrieve, delete, list, exists, and explicit migration. Not-found,
+access-denied, corrupt, insecure-store, duplicate, and size failures remain
+distinct. No API exports all plaintext values or generates shell source.</p>
+<h2 id="macos-keychain">macOS Keychain</h2>
+<p>The default generic-password service remains <code>com.sendbox.secrets</code>, matching
+the Swift implementation. Values use a versioned record inside the Keychain;
+legacy Swift values remain readable and are rewritten only through <code>migrate</code>.
+Tests use unique service identifiers and delete their own entries.</p>
+<p><code>KeychainMigrationPlan</code> models service-name and signing-identity changes. A
+changed signing identity may trigger the existing Keychain ACL prompt. SendBox
+does not weaken ACLs or silently create replacement credentials. Cross-service
+migration requires a <code>MigrationAuthorization</code> produced after user
+confirmation; values move directly between Keychain operations and are never
+returned as an export bundle. Final release signing must run the ignored ACL
+qualification test in the intended signing environment.</p>
+<h2 id="linux-protected-file-store">Linux protected file store</h2>
+<p>The compatibility path remains:</p>
+<pre tabindex="0"><code class="language-text">~/.sendbox/secrets/&lt;hex(service)&gt;/&lt;hex(secret-name)&gt;</code></pre>
+<p>Directories are opened as capabilities and must be owned by the effective user
+with mode <code>0700</code>. Secret and lock files must be regular, owner-owned <code>0600</code>
+files. Existing symlinks, wrong types, owners, or modes are rejected; the store
+does not chmod attacker-controlled paths.</p>
+<p>All child operations are descriptor-relative. Opens use <code>O_NOFOLLOW</code>.
+Mutations hold a stable service lock file across validation, write, file
+<code>fsync</code>, atomic rename, and directory <code>fsync</code>. This protects cooperating
+SendBox processes on a local filesystem; network filesystems with unreliable
+advisory locks are unsupported. Interrupted temporary files are never treated
+as secrets.</p>
+<p>Swift Linux raw UTF-8 files remain readable as version 0. The explicit
+<code>migrate</code> operation captures filesystem timestamps and atomically replaces the
+raw value with the versioned record. A record magic prefix beginning with an
+invalid UTF-8 byte distinguishes new records from every value the Swift store
+could write. A malformed prefixed record is corrupt and never falls back to
+plaintext.</p>
+<h2 id="session-secret-envelopes">Session secret envelopes</h2>
+<p><code>EnvelopeCipher</code> derives a 256-bit XChaCha20-Poly1305 key from authenticated
+bootstrap/protocol material using HKDF-SHA256 and session-specific domain
+separation. Each envelope authenticates a canonical CBOR associated-data tuple:</p>
+<ul>
+<li>protocol domain and version;</li>
+<li>session ID and recipient role;</li>
+<li>secret name and sequence;</li>
+<li>expiration time;</li>
+<li>policy digest.</li>
+</ul>
+<p>Each seal uses a fresh 192-bit operating-system nonce and rejects duplicate
+sequence or nonce issuance within the cipher instance. Opening verifies the
+expected binding, authentication tag, expiration, and a bounded session replay
+guard before returning a zeroizing value. Replay state is intentionally
+session-scoped: session bootstrap material and IDs must never be reused after a
+process restart. Guest plaintext persistence is not provided by this crate.</p>
+<h2 id="mcp-gateway-credential-partition">MCP gateway credential partition</h2>
+<p>Remote MCP bearer credentials reuse the host <code>SecretStore</code>, but they do not
+enter the ordinary workload secret set or environment. Each
+<code>http.authorization.bearer_secret</code> name is derived from the hierarchical MCP
+policy and signed as a separate boundary-plan partition. Configuration rejects
+missing, unexpected, duplicate, or overlapping workload/gateway names.</p>
+<p>The host resolves exactly those names before runtime startup. Values are carried
+only in the authenticated root-owned bootstrap payload, validated against the
+signed MCP policy, moved into zeroizing gateway storage, and injected only as
+the configured upstream <code>Authorization: Bearer</code> header after route, policy,
+destination, and TLS validation. Values are redacted from debug output, audit,
+inspection, and errors and are never accepted from project MCP files.</p>
+<h2 id="credential-broker-policy-and-listener">Credential broker policy and listener</h2>
+<p>Policies require an exact canonical target host, absolute path prefix, explicit
+allowed methods, request and response limits, redirect policy, and HTTPS with
+TLS verification. Injection supports bearer, validated custom header, query,
+and complete path-segment replacement. Userinfo, host suffix tricks, trailing
+dots, control characters, duplicate query parameters, invalid header values,
+cross-target redirects, and oversized bodies fail closed.</p>
+<p>Transformed URLs, headers, and bodies use redacted wrappers. Audit metadata
+contains only method, original path, exact target, injection kind, secret name,
+and body size. Bearer injection writes <code>Bearer &lt;actual secret&gt;</code>; the Swift
+placeholder regression is covered by a unit test.</p>
+<p>Repository credentials including <code>GITHUB_TOKEN</code>, <code>GH_TOKEN</code>, Git askpass/SSH
+forwarding variables, GitHub OAuth/PAT values, and GitHub App private keys are
+explicitly denied. They must use the guarded GitHub forwarding subsystem.</p>
+<p><code>sendbox-credentials</code> exposes one explicit HTTP base URL per credential rule.
+The listener binds to IPv4 or IPv6 loopback by default. A non-loopback address
+must be selected through the explicit bind variant; wildcard and multicast
+binds are rejected.</p>
+<p>The listener accepts one origin-form HTTP/1.1 request per connection and then
+closes it. It enforces bounded request lines, aggregate headers, header count,
+body length, read time, concurrent connections, response headers, response
+body, redirects, and shutdown time. Bare line feeds, obsolete folding,
+duplicate <code>Host</code> or <code>Content-Length</code>, <code>Transfer-Encoding</code>, absolute-form
+targets, pipelined bytes, control characters, and unsupported <code>CONNECT</code>
+credential injection fail closed.</p>
+<p>The broker constructs the upstream URL itself after the local rule route,
+method, host, and path have matched. It strips hop-by-hop and
+<code>Connection</code>-nominated headers, then calls the <code>sendbox-secrets</code>
+transformation. Upstream traffic is HTTPS-only on port 443 with hostname and
+certificate verification enabled. Automatic redirects and system proxies are
+disabled. Each redirect is bounded, re-authorized against the exact host and
+path policy, and transformed again before sending.</p>
+<p>DNS is resolved before each hop. Every returned address is classified with the
+production egress address classifier, restricted addresses require exact
+explicit approval, and the approved addresses are pinned into the HTTPS client
+for that hop while the original hostname remains the TLS SNI and certificate
+identity. This prevents a second resolver lookup from changing the destination
+between authorization and connect.</p>
+<h3 id="agent-compatibility">Agent compatibility</h3>
+<p>Agents and SDKs must support replacing an API base URL and must append the
+original upstream path and query to the returned per-rule endpoint. The local
+URL is HTTP because it is a loopback host process; the broker performs the
+verified HTTPS connection to the real service.</p>
+<p>The broker is not a generic HTTP proxy. It does not set <code>HTTP_PROXY</code> or
+<code>HTTPS_PROXY</code>, intercept TLS, synthesize certificates, rewrite DNS, or inject
+credentials into CONNECT tunnels. Clients that hardcode their service origin or
+only support HTTPS proxy tunneling are incompatible until they gain an explicit
+base-URL setting.</p>
+<h3 id="governed-provider-relay">Governed provider relay</h3>
+<p><a href="../governed-sessions/">Governed sessions</a> connect this broker to compatible
+agents for Anthropic and OpenAI without placing the credential in the guest.
+The guest supervisor listens on loopback port 15084 and forwards each request
+over the authenticated control channel. The host relay
+(<code>sendbox_credentials::relay::RelayEndpoint</code>) authorizes it against a leased
+grant, injects the host-held key, and reuses the pinned transport above with
+redirects denied. Unlike the per-connection listener, the relay streams
+response bodies, including server-sent events, under guest credit and per
+service size, duration, and idle limits. Agents receive only the provider base
+URL variable and a fixed placeholder key.</p>
+<h2 id="guarded-github-repository-authentication">Guarded GitHub repository authentication</h2>
+<p><code>GitHubMetadataClient</code> separates repository metadata from the production <code>gh</code>
+adapter. The adapter executes an absolute <code>gh</code> path with fixed-shape GraphQL
+argv, variables for repository owner/name and cursors, bounded output and time,
+no output publication, a cleared environment, and explicit <code>GH_CONFIG_DIR</code>,
+<code>HOME</code>, host, prompt, pager, and update settings. Authentication tokens never
+appear in argv or diagnostics.</p>
+<p>Authorization resolves the selected repository owner type and visibility, then
+paginates the complete viewer repository set and filters all non-public
+repositories. Malformed JSON, command failure, timeout, cancellation, truncated
+output, a missing or repeated cursor, or the hard page limit aborts
+authorization. The token is requested only after scope authorization succeeds.</p>
+<p>The repository policy preserves the Swift behavior:</p>
+<ul>
+<li>the selected non-public repository must be accessible;</li>
+<li>a public selected repository cannot use credentials with non-public scope;</li>
+<li>an additional non-public repository requires an organization owner matching
+the selected repository and the explicit private-access override;</li>
+<li>user-owned repositories are not treated as an organization;</li>
+<li>cross-organization non-public scope is always denied.</li>
+</ul>
+<p>Copilot authentication is independently gated by
+<code>forward_copilot_auth</code>. The host resolves the credential from
+<code>COPILOT_GITHUB_TOKEN</code>, falling back to the legacy <code>GITHUB_COPILOT_TOKEN</code> only
+when the supported variable is absent; a variable that is present but empty is a
+hard error rather than a silent fallback. Repository-scoped credentials
+(<code>GH_TOKEN</code>, <code>GITHUB_TOKEN</code>) are never consulted, so Copilot forwarding stays
+independent of <code>forward_auth</code>. Whichever host variable supplied the value, the
+guest only ever receives <code>COPILOT_GITHUB_TOKEN</code>, which is the name current
+GitHub Copilot CLI releases read. Errors name the supported variables and never
+include a credential value.</p>
+<p><code>SessionCredentialConfiguration</code> returns the broker
+listener and per-rule agent endpoints plus zeroizing GitHub/Copilot values for a
+specific session. It does not install environment variables or start a runtime.</p>
+<p>Production <code>sendbox run</code> resolves the selected repository once, authorizes the
+GitHub token before retrieving it, and adds only derived credential names to the
+signed boundary plan. Values travel through protocol-v2 authenticated secret
+envelopes. The guest Git guard installs fixed askpass and SSH wrappers; caller
+askpass, credential helpers, <code>core.sshCommand</code>, and SSH configuration overrides
+remain rejected. SSH private keys use an owner-only runtime file only while the
+trusted SSH child runs and are removed afterward. Hyperlight rejects these
+features because it does not provide persistent secret delivery.</p>
+<h2 id="remaining-qualification">Remaining qualification</h2>
+<ul>
+<li>Connect generic explicit-base-URL credential rules to compatible agents
+outside governed sessions. Governed sessions already broker Anthropic and
+OpenAI through the relay.</li>
+<li>Run the ignored Keychain ACL qualification whenever the production signing
+identity or Keychain service identity changes.</li>
+</ul>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/secrets-and-credential-broker.md"><code>docs/architecture/secrets-and-credential-broker.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/secrets-and-credential-broker.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../package-registry-proxy/"><span class="pager-label">Previous</span> Package registry proxy</a>
+<a class="pager-next" href="../governed-sessions/"><span class="pager-label">Next</span> Governed sessions</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="./" aria-current="page">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

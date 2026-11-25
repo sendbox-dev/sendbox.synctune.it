@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Governed sessions | SendBox docs</title>
+  <meta name="description" content="Governed sessions add operator-signed policy profiles and host-side credential mediation on top of the existing VM isolation, signed boundary plan, and…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Governed sessions | SendBox docs">
+  <meta property="og:description" content="Governed sessions add operator-signed policy profiles and host-side credential mediation on top of the existing VM isolation, signed boundary plan, and…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/governed-sessions/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/governed-sessions/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Governed sessions</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="governed-sessions">Governed sessions</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#selecting-governance">Selecting governance</a></li>
+<li><a href="#operator-configuration">Operator configuration</a></li>
+<li><a href="#profiles">Profiles</a></li>
+<li><a href="#admission-and-composition">Admission and composition</a></li>
+<li><a href="#binding">Binding</a></li>
+<li><a href="#brokered-credentials">Brokered credentials</a></li>
+<li><a href="#grants-and-revocation">Grants and revocation</a></li>
+<li><a href="#audit">Audit</a></li>
+<li><a href="#shared-governance-service">Shared governance service</a></li>
+<li><a href="#trust-boundaries-and-residual-risks">Trust boundaries and residual risks</a></li>
+</ol>
+</nav>
+<p>Governed sessions add operator-signed policy profiles and host-side
+credential mediation on top of the existing VM isolation, signed boundary
+plan, and session audit. Standalone sessions are unchanged unless governance
+is selected or required by the host.</p>
+<p>Two authorities are supported:</p>
+<ul>
+<li><strong>Local</strong> (single host): the host verifies the profile and runs the grant
+authority in process. The principal is the local OS account.</li>
+<li><strong>Shared</strong> (<a href="https://github.com/sendbox-dev/sendbox-fleet"><code>sendbox-fleet</code></a>):
+an authenticated, multi-user service enforces project-scoped roles, approves
+bounded, expiring exceptions, admits sessions, issues and checks grants, and
+keeps a central, hash-chained audit log. See
+<a href="#shared-governance-service">shared governance service</a>.</li>
+</ul>
+<p>Both share the <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/crates/sendbox-governance"><code>sendbox-governance</code></a>
+contract crate (contract version 2).</p>
+<figure class="diagram">
+<pre tabindex="0"><code class="language-mermaid">flowchart LR
+  subgraph Guest VM
+    A[Agent&lt;br/&gt;ANTHROPIC_BASE_URL / OPENAI_BASE_URL] --&gt;|loopback, admitted for the agent cgroup| R[Credential relay&lt;br/&gt;trusted supervisor]
+  end
+  R --&gt;|relay events on the authenticated control channel| H[Host relay endpoint]
+  H --&gt; G{Grant authority&lt;br/&gt;binding, expiry, revocation, revision}
+  G --&gt;|allowed| B[Broker&lt;br/&gt;verified TLS, DNS pinning,&lt;br/&gt;address classes, limits]
+  B --&gt;|provider key injected on the host| U[(api.anthropic.com&lt;br/&gt;api.openai.com)]
+  O[Operator config + signed profile] --&gt; P[Admission: verify, compose, bind] --&gt; BP[Signed boundary plan&lt;br/&gt;+ governance binding]</code></pre>
+<figcaption>Diagram source (Mermaid). <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/governed-sessions.md">View it rendered on GitHub</a>.</figcaption>
+</figure>
+<h2 id="selecting-governance">Selecting governance</h2>
+<div class="table-scroll" role="group" aria-label="Selecting governance table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Mode</th><th scope="col">How it is selected</th><th scope="col">Who may own the files</th></tr></thead>
+<tbody>
+<tr><td>Managed</td><td><code>/Library/Application Support/SendBox/governance.yaml</code> (macOS) or <code>/etc/sendbox/governance.yaml</code> (Linux) exists</td><td>root, with every ancestor root-owned and not group/world writable</td></tr>
+<tr><td>Opt-in</td><td><code>sendbox run --governance-config PATH</code> on a host without a managed file</td><td>root or the current user, not group/world writable</td></tr>
+<tr><td>Standalone</td><td>neither</td><td>not applicable</td></tr>
+</tbody>
+</table>
+</div>
+<p>A managed configuration always wins. When it exists, every <code>sendbox run</code> is
+governed and <code>--governance-config</code> is rejected if it names any other file.
+There is no environment variable or project setting that disables governance
+or selects another authority. If the managed path exists but cannot be read or
+verified, the session fails closed.</p>
+<p>Opt-in mode is self-governance: it lets a user apply a signed profile to their
+own sessions, but the user can stop selecting it. Use managed mode when the
+operator and the session user are different parties.</p>
+<p>A standalone project that lists <code>credential_services</code> is rejected, because
+brokered credentials only exist under a grant authority.</p>
+<h2 id="operator-configuration">Operator configuration</h2>
+<pre tabindex="0"><code class="language-yaml">format: sendbox.governance-operator
+version: 1
+authority: local
+profile: acme-default
+profile_path: /Library/Application Support/SendBox/profiles/acme-default.yaml
+# signatures_path defaults to profile_path + &quot;.sig.json&quot;
+minimum_revision: 3
+trust:
+  threshold: 1
+  signers:
+    - version: 1
+      fingerprint: &quot;&lt;hex&gt;&quot;
+      name: Acme security
+      email: null
+      public_key_base64: &quot;&lt;base64&gt;&quot;
+      valid_from_unix: 1790000000
+      expires_at_unix: null
+      revoked_at_unix: null
+bundle:                     # optional: pin the guest bundle trust root
+  trust_root_sha256: [&quot;&lt;sha256 of release-public.key&gt;&quot;]
+  trust_root_ids: [external-release-root]
+  minimum_release_sequence: 7
+revision_cache_seconds: 30
+fleet:                      # optional: use a shared governance service
+  url: https://fleet.acme.example
+  token_secret: SENDBOX_FLEET_TOKEN   # host secret holding the caller's token
+  timeout_seconds: 10</code></pre>
+<ul>
+<li><code>trust</code> builds a provenance trust store with <code>allow_unsigned: false</code>. At
+least <code>threshold</code> distinct, unexpired, unrevoked signers must sign the
+profile's exact bytes.</li>
+<li><code>minimum_revision</code> is the operator's rollback floor. Raising it makes every
+older revision, and every grant bound to one, stale.</li>
+<li><code>bundle</code> pins the <code>--trust-root</code>, <code>--trust-root-id</code>, and minimum
+<code>--minimum-release-sequence</code> a governed run may use, so a caller cannot
+substitute their own guest supervisor. In managed mode the pinned trust root
+file must be root-owned with protected ancestors, so it cannot be swapped
+between the pin check and bundle verification.</li>
+<li><code>revision_cache_seconds</code> bounds how long the grant authority reuses a
+verified profile before re-reading and re-verifying it.</li>
+<li><code>fleet</code> selects the <a href="#shared-governance-service">shared governance service</a>
+as the authority. <code>authority</code> must then equal the service's
+<code>FLEET_AUTHORITY_ID</code> and cannot be <code>local</code>. <code>url</code> must use <code>https://</code>;
+plain <code>http://</code> is accepted only for a loopback host. <code>timeout_seconds</code> is
+1 to 60.</li>
+</ul>
+<p>The host also keeps a per-user high-water mark of admitted revisions under the
+runtime state directory and rejects a lower revision. That record is
+user-writable; the operator <code>minimum_revision</code> is the authoritative floor.</p>
+<h2 id="profiles">Profiles</h2>
+<p>Profiles are YAML documents signed byte for byte. Their digest is the SHA-256
+of those bytes, so any edit is a new revision that must be signed again.</p>
+<pre tabindex="0"><code class="language-yaml">format: sendbox.governance-profile
+version: 1
+id: acme-default
+revision: 4
+not_before_unix: 1790000000
+expires_at_unix: 1810000000     # at most 400 days after not_before_unix
+ceiling:
+  runtimes: [apple, kata]
+  images: [&quot;sha256:&lt;64 hex&gt;&quot;]   # optional; empty permits any image
+  workspace_roots: [/Users]     # optional; empty permits any workspace
+  resources: { max_cpus: 8, max_memory_mb: 16384 }
+  commands:
+    default_action: deny
+    allowlist: [&quot;/usr/local/bin/claude *&quot;, &quot;git *&quot;, &quot;cat *&quot;]
+  network:
+    default_action: deny
+    allowed_domains: [&quot;*.github.com&quot;, &quot;registry.npmjs.org&quot;]
+    allowed_networks: []
+    allowed_ports: []            # empty permits any port
+    allow_dns: true
+    github_meta: false           # implicit GitHub Meta CIDR delegation
+  mcp:
+    require_boundaries: true
+    servers: {}
+  packages:
+    allowed_registries: [&quot;https://registry.npmjs.org/&quot;]
+    require_supply_chain: false
+  secrets:
+    workload: [NPM_TOKEN]        # names that may enter the guest
+  github:
+    forward_auth: false
+    forward_copilot_auth: false
+    allow_private_repository_access: false
+    ssh_key: false
+    require_branch_protection: true
+    safe_outputs: { enabled: true, allow_apply: false, repositories: [] }
+denials:
+  commands: [&quot;git push --force *&quot;]
+  domains: [pastebin.com]
+  networks: [&quot;169.254.0.0/16&quot;]
+credential_services:
+  - id: anthropic
+    provider: anthropic
+    secret: SENDBOX_ANTHROPIC_API_KEY
+    methods: [POST, GET]               # default: GET, POST
+    path_prefixes: [/v1/messages, /v1/models]
+    max_request_bytes: 8388608
+    max_response_bytes: 67108864
+    max_duration_seconds: 900
+    idle_timeout_seconds: 120
+    deny_direct_egress: true
+  - id: openai
+    provider: openai
+    secret: SENDBOX_OPENAI_API_KEY
+grants:
+  lease_seconds: 300
+  max_ttl_seconds: 28800
+  revocation_grace_seconds: 5
+  max_concurrent_streams: 8
+exceptions:                    # optional: denials an approved exception may lift
+  max_ttl_seconds: 86400       # at most 7 days
+  commands: []
+  domains: [pastebin.com]      # each entry must also be listed in denials
+  networks: []</code></pre>
+<p>Omitted ceiling sections take their most restrictive value. Unknown fields are
+rejected. An omitted <code>exceptions</code> section permits no exceptions; see
+<a href="#exceptions">exceptions</a>.</p>
+<h3 id="signing-workflow">Signing workflow</h3>
+<pre tabindex="0"><code class="language-bash">sendbox governance keygen --output ~/acme-governance.key   # prints the public identity
+sendbox governance sign acme-default.yaml --key ~/acme-governance.key
+sendbox governance sign acme-default.yaml --key second.key --append   # threshold signing
+sudo install -m 0644 -o root acme-default.yaml acme-default.yaml.sig.json \
+  &quot;/Library/Application Support/SendBox/profiles/&quot;
+sendbox governance verify
+sendbox governance check --config .sendbox.yaml</code></pre>
+<p><code>check</code> loads the active profile, applies its denials, and lists every
+violation without starting a session. Keep signing keys off the managed host.</p>
+<h2 id="admission-and-composition">Admission and composition</h2>
+<p>Admission runs before any side effect such as resolving GitHub credentials,
+creating session state, or starting a runtime:</p>
+<ol>
+<li>Discover the authority, load the operator configuration, check bundle pins.</li>
+<li>Verify profile signatures, profile id, validity window, minimum revision,
+and the local high-water mark.</li>
+<li>Append profile denials and every <code>deny_direct_egress</code> provider host to the
+session policy. Denials only add deny rules and blocked destinations.</li>
+<li>Compare the effective configuration with the ceiling. Every violation is
+reported; nothing is silently narrowed.</li>
+<li>Sign a governance binding into the boundary plan.</li>
+</ol>
+<p>Composition is a subset check over expanded capabilities, never a merge:</p>
+<div class="table-scroll" role="group" aria-label="Admission and composition table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Dimension</th><th scope="col">Rule</th></tr></thead>
+<tbody>
+<tr><td>Runtime</td><td>Must be listed. Hyperlight is always rejected because it has no persistent guest boundary. Project-selected Kata executables, handlers, or configuration are rejected.</td></tr>
+<tr><td>Image, workspace, resources</td><td>Image digest in <code>images</code>, workspace under a <code>workspace_roots</code> entry, resources at most the maximums, when configured.</td></tr>
+<tr><td>Commands</td><td><code>allow</code> default requires an <code>allow</code> ceiling. Each exact rule must be matched by a ceiling rule with the runtime's own argv and basename semantics; a wildcard rule must equal a ceiling rule.</td></tr>
+<tr><td>Domains</td><td><code>allow</code> default requires an <code>allow</code> ceiling. Exact names need a covering pattern; <code>*.x</code> needs <code>*.x</code> or a broader <code>*.y</code>. Entries already blocked are ignored.</td></tr>
+<tr><td>GitHub Meta</td><td>An unblocked exact <code>github.com</code> grant implicitly delegates GitHub Meta CIDRs and requires <code>github_meta: true</code>.</td></tr>
+<tr><td>Networks and ports</td><td>Each CIDR must be contained in a ceiling CIDR. A port ceiling requires an explicit, covered port list.</td></tr>
+<tr><td>DNS</td><td>Numeric limits at most the ceiling (defaults equal the runtime defaults), record types a subset, and the budget window equal.</td></tr>
+<tr><td>MCP</td><td>The boundary must stay enabled when required. Legacy flat tool rules are unsupported. Each server must match a ceiling server's transport, command or URL, tools, HTTP flags, redirects, and secrets.</td></tr>
+<tr><td>Packages</td><td>Registries, plaintext HTTP, credentials, finding overrides, and exceptions need explicit ceiling permission; inspection can be required.</td></tr>
+<tr><td>Secrets</td><td>Workload secrets must be listed; a brokered credential or a provider endpoint variable can never be a workload secret.</td></tr>
+<tr><td>GitHub</td><td>Token forwarding, Copilot forwarding, private access, SSH keys, disabled branch protection, and Safe Outputs apply mode or targets each need ceiling permission.</td></tr>
+<tr><td>Credential services</td><td>Must be offered by the profile.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Observability settings are not capabilities and are not compared.</p>
+<h2 id="binding">Binding</h2>
+<p><code>BoundaryPlan.governance</code> records the authority (id and trust digest), the
+exact profile (id, revision, SHA-256), the principal, the project, the
+effective policy SHA-256, the brokered service ids, and the ids of any
+exceptions the session lifted (omitted when there are none). It is omitted
+from standalone plans, whose canonical bytes are unchanged. The effective
+policy digest must equal the plan's <code>policy_sha256</code>, which secret envelopes
+already authenticate. A local authority uses <code>local-user:&lt;uid&gt;</code> as the
+principal; a shared service uses the principal it authenticated. The project
+is <code>github:&lt;owner&gt;/&lt;repository&gt;</code> (or a workspace path digest).</p>
+<h2 id="brokered-credentials">Brokered credentials</h2>
+<p>A project requests services by profile id:</p>
+<pre tabindex="0"><code class="language-yaml">credential_services: [anthropic]</code></pre>
+<p>The host resolves each provider credential from the host secret store before
+the session starts (<code>sendbox secrets add SENDBOX_ANTHROPIC_API_KEY</code>) and keeps
+it in the host process. It is never part of the boundary plan, bootstrap,
+secret envelopes, guest environment, or audit. The guest receives only:</p>
+<div class="table-scroll" role="group" aria-label="Brokered credentials table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Provider</th><th scope="col">Base URL variable</th><th scope="col">Key variable</th></tr></thead>
+<tbody>
+<tr><td><code>anthropic</code></td><td><code>ANTHROPIC_BASE_URL=http://127.0.0.1:15084/&lt;id&gt;</code></td><td><code>ANTHROPIC_API_KEY=sendbox-brokered-credential</code></td></tr>
+<tr><td><code>openai</code></td><td><code>OPENAI_BASE_URL=http://127.0.0.1:15084/&lt;id&gt;/v1</code></td><td><code>OPENAI_API_KEY=sendbox-brokered-credential</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The key value is a fixed placeholder that the broker discards. Policies
+describe services, not agents: any agent or SDK that honors these variables
+works, including Claude Code and Codex.</p>
+<h3 id="compatibility-contract">Compatibility contract</h3>
+<ul>
+<li>The client must support an explicit base URL and append the upstream path.</li>
+<li>Request bodies need <code>Content-Length</code>; chunked uploads are rejected.</li>
+<li>Clients that hardcode their service origin or require HTTPS proxy tunneling
+are unsupported. SendBox never falls back to delivering the raw credential,
+intercepting TLS, or executing on the host.</li>
+</ul>
+<h3 id="relay">Relay</h3>
+<p>The trusted guest supervisor listens on <code>127.0.0.1:15084</code>; when egress is
+enforced, nftables admits that port only for the agent cgroup. A request to
+<code>/&lt;service&gt;/&lt;path&gt;</code> becomes one relay stream on the authenticated control
+channel. The guest drops <code>authorization</code>, <code>x-api-key</code>, <code>cookie</code>, and forwarding
+headers, and the host additionally forwards only the provider's header
+allowlist.</p>
+<p>The host checks method and path locally, asks the grant authority, injects the
+credential (<code>x-api-key</code> for Anthropic, <code>Authorization: Bearer</code> for OpenAI),
+and sends the request with the existing broker transport: verified HTTPS on
+port 443, DNS resolved and classified per request, addresses pinned, no
+system proxy, and redirects denied. Responses stream back as they arrive,
+including server-sent events. The guest grants one credit per chunk written
+to the agent and the host never exceeds 16 outstanding 32 KiB chunks, so a
+slow agent cannot stall terminal or control traffic. Limits per service bound
+request size, response size, total duration, and idle time; a stream whose
+upstream or guest credit stays idle longer than <code>idle_timeout_seconds</code> fails.
+When the agent disconnects or the guest stops reading a stream, the guest
+tells the host so it closes the upstream connection.</p>
+<h2 id="grants-and-revocation">Grants and revocation</h2>
+<p>At session start the grant authority issues one grant per brokered
+service, bound to the principal, project, session, binding digest, profile
+revision, methods, path prefixes, a renewable lease, and a hard maximum
+lifetime. Every request is checked for:</p>
+<ul>
+<li>an existing, unrevoked grant with an unexpired lease and lifetime;</li>
+<li>the exact principal, project, session, and binding digest from trusted host
+state (workload-supplied identity is never consulted);</li>
+<li>the granted service, method, and segment-aware path prefix (encoded
+separators and dot segments are rejected);</li>
+<li>a profile revision that is still the operator's current, verified revision
+and not below the minimum.</li>
+</ul>
+<p>An unreadable or unverifiable profile denies with <code>authority_unavailable</code>. The
+host renews leases at a third of the lease length. When a grant's renewal
+fails, new requests for that service are denied and its in-flight streams get
+<code>revocation_grace_seconds</code> to finish before they are cancelled and the agent
+sees the stream end with <code>grant_lapsed</code>. Streams of other services are not
+affected. Streams are authorized once at start and are
+otherwise bounded by <code>max_duration_seconds</code>.</p>
+<p>When the workload ends, is cancelled, or fails, the relay stops accepting
+requests, aborts in-flight streams, and revokes every grant. A stream that was
+already sent upstream is recorded as <code>aborted_uncertain</code>: SendBox does not
+claim that revocation reverses completed external effects.</p>
+<h2 id="audit">Audit</h2>
+<p>Records join the existing signed session audit chain:</p>
+<div class="table-scroll" role="group" aria-label="Audit table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Action</th><th scope="col">Recorded when</th></tr></thead>
+<tbody>
+<tr><td><code>governance.admission.accepted</code></td><td>the session starts under a profile</td></tr>
+<tr><td><code>credential.grant.issued</code>, <code>.lapsed</code>, <code>.revoked</code></td><td>grant lifecycle</td></tr>
+<tr><td><code>credential.request.allowed</code>, <code>.denied</code></td><td>each authorization decision</td></tr>
+<tr><td><code>credential.request.outcome</code></td><td>each stream ends, with status, byte counts, duration, and outcome</td></tr>
+<tr><td><code>governance.exception.expired</code></td><td>a lifted exception expired and the session was stopped</td></tr>
+<tr><td><code>credential.request.outcome_report_failed</code></td><td>a stream outcome could not be reported to the shared service</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each record carries principal, project, session, authority, profile id,
+revision and digest, effective policy digest, and binding digest. The
+admission record also lists each lifted exception with its scope, requester,
+approver, and expiry, and the service URL when a shared service is used. Request
+records add the service, method, path without query, and reason. Credentials,
+headers, query strings, and request or response bodies are never recorded. A
+failure to record relay evidence fails the run.</p>
+<h2 id="shared-governance-service">Shared governance service</h2>
+<p>With <code>fleet</code> in the operator configuration, the host uses
+<a href="https://github.com/sendbox-dev/sendbox-fleet"><code>sendbox-fleet</code></a> as its
+authority. The profile is still read from <code>profile_path</code> and verified against
+the operator's <code>trust</code> signers on the host; the service separately verifies the
+same signed bytes when an operator publishes them, and only admits sessions
+bound to its current revision.</p>
+<figure class="diagram">
+<pre tabindex="0"><code class="language-mermaid">sequenceDiagram
+  participant H as SendBox host (caller's token)
+  participant F as sendbox-fleet
+  H-&gt;&gt;F: GET /v1/whoami
+  F--&gt;&gt;H: principal (becomes the session principal)
+  H-&gt;&gt;F: GET /v1/exceptions?project=…&amp;state=active
+  Note over H: lift only approved exceptions for this principal,&lt;br/&gt;project, and exact profile revision; check the ceiling
+  H-&gt;&gt;F: POST /v1/sessions:admit (session, binding)
+  Note over F: caller = binding principal, role ≥ member,&lt;br/&gt;current revision, every exception still valid
+  H-&gt;&gt;F: POST /v1/grants · /v1/authorize · :renew
+  H-&gt;&gt;F: POST /v1/sessions/{id}:end (revokes remaining grants)</code></pre>
+<figcaption>Diagram source (Mermaid). <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/governed-sessions.md">View it rendered on GitHub</a>.</figcaption>
+</figure>
+<ul>
+<li><p><strong>Authentication.</strong> The caller stores a service token in the host secret
+store under <code>token_secret</code> (default <code>SENDBOX_FLEET_TOKEN</code>). With an
+identity provider, <code>sendbox governance login</code> exchanges an OIDC token for a
+short-lived service token and stores it:</p>
+<pre tabindex="0"><code class="language-bash">my-idp print-id-token | sendbox governance login   # or --identity-token-file PATH</code></pre>
+<p>The service URL comes only from the verified operator configuration.
+Tokens can also be issued by the service operator and added with
+<code>sendbox secrets add SENDBOX_FLEET_TOKEN</code>. A token is sent only to the
+configured URL, redirects are never followed, system proxies are ignored,
+and it can never be a workload secret.</p></li>
+<li><p><strong>Identity.</strong> The authenticated principal, not the local account, is the
+session principal. The service refuses a binding whose principal is not the
+caller, so a host cannot claim another identity.</p></li>
+<li><p><strong>Roles.</strong> Admission needs the <code>member</code> role or higher in the project.
+Roles, exceptions, and audit are managed through the service; see its
+<a href="../../../fleet/architecture/">architecture</a>.</p></li>
+<li><p><strong>Grants.</strong> The service is the grant authority. Every brokered request is
+authorized by the service; any non-200 answer, timeout, or unreachable
+service denies with <code>authority_unavailable</code>. Nothing falls back to the
+local authority or to credential delivery.</p></li>
+<li><p><strong>Outcomes.</strong> When a brokered stream ends, the host reports its redacted
+outcome (<code>succeeded</code>, <code>failed</code>, or <code>unknown</code> when a stream was cut after
+reaching the provider) to the service, which records it in the central
+audit. Reports are sent in order and flushed before grants are revoked; a
+report that fails is recorded as <code>credential.request.outcome_report_failed</code>
+in the session audit, which keeps the authoritative local record.</p></li>
+<li><p><strong>End.</strong> After the workload ends, the host revokes its grants and ends the
+session on the service, which revokes any grant still live.</p></li>
+</ul>
+<h3 id="exceptions">Exceptions</h3>
+<p>An exception lifts exactly one profile denial for a project, or for one
+principal in it, until it expires (at most 7 days). Only denials the operator
+listed under the profile's <code>exceptions</code> section can be lifted, so the
+operator's signed opt-in bounds every exception. Lifting a denial never adds a
+capability: the session must still fit the ceiling, and provider hosts blocked
+for brokered services are never lifted.</p>
+<p>A project member requests an exception against the current profile revision;
+a different principal with the <code>owner</code> or <code>admin</code> role approves it. The host
+lifts a denial only for an approved, unrevoked, unexpired exception bound to
+the exact revision it runs under, binds its id into the signed boundary plan,
+and the service re-checks it at admission. A new revision or a raised minimum
+revision makes the approval stale, so it can no longer admit sessions.</p>
+<p>Egress and command rules are fixed when the VM starts, so the host stops the
+session when the earliest lifted exception expires
+(<code>governance.exception.expired</code>, exit code <code>6</code>). Like any failed run, the
+workspace is rolled back to its starting snapshot, so request an expiry that
+covers the work. Grants are capped at that
+expiry, and once an exception is revoked the service denies the session's
+brokered requests and lease renewals with <code>stale_policy</code>. Revocation does not
+reach into the VM's egress rules: a revoked exception's lifted denial stays
+lifted until the session ends or the exception's original expiry stops it.</p>
+<h2 id="trust-boundaries-and-residual-risks">Trust boundaries and residual risks</h2>
+<ul>
+<li><p>The local user who owns the host secret store can still read their own
+provider key on the host. The guarantee is that the agent and guest never
+receive it.</p></li>
+<li><p>Opt-in governance is chosen by the user and is not an enforcement boundary
+against that user.</p></li>
+<li><p>The local revision high-water mark is user-writable; rely on
+<code>minimum_revision</code> for rollback protection.</p></li>
+<li><p>Long-running streams are not re-authorized mid-stream.</p></li>
+<li><p>With <code>deny_direct_egress: false</code> and permissive network policy, a workload
+that has its own provider key could still call the provider directly. Keep
+the default to block the provider host for the workload.</p></li>
+<li><p>A shared service that is compromised can authorize misuse but never sees
+provider keys; the host broker keeps them. A compromised host is limited to
+sessions and grants issued to the principals whose tokens it holds.</p></li>
+<li><p>The fleet token is a bearer credential for its principal. Keep token
+lifetimes short; revoke tokens and disable principals in the service.</p></li>
+<li><p><code>sendbox governance check</code> evaluates the local profile only and does not
+consult the service for exceptions.</p></li>
+</ul>
+<p>Non-goals: Kubernetes or fleet scheduling, universal TLS interception, formal
+policy verification, model API translation, and replacing isolation
+providers.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/governed-sessions.md"><code>docs/architecture/governed-sessions.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/governed-sessions.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../secrets-and-credential-broker/"><span class="pager-label">Previous</span> Secrets and credential broker</a>
+<a class="pager-next" href="../git-branch-guard/"><span class="pager-label">Next</span> Git branch guard</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="./" aria-current="page">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

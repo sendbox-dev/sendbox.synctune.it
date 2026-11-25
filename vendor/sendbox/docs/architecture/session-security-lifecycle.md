@@ -1,0 +1,105 @@
+# Session security lifecycle
+
+`sendbox-session-security` is the adapter-neutral coordination layer between
+`sendbox-security`, `sendbox-secrets`, and host orchestration. It does not
+directly start a runtime or change guest controls; `sendbox-host` injects the
+runtime-independent adapters and executes the lifecycle around persistent Apple
+and Kata sessions.
+
+## Lifecycle
+
+`SecuritySession::prepare` runs the security prerequisites in this order:
+
+1. Verify policy and configuration bytes against injected trust stores.
+2. Capture the before-state snapshot.
+3. Create the session audit chain using the canonical `SessionId` hex value.
+4. Validate secret references and produce authenticated, session-bound envelopes.
+5. Prepare credential rules and notify an injected bounded listener.
+6. Initialize the injected permission supervisor and anchor its generation and
+   state hash in the audit chain.
+
+Runtime-independent callers can then record audit events through the thread-safe
+`AuditRecorder`. Completion and failure finalization capture the after-state,
+compute the snapshot diff, record rollback and cleanup outcomes, and publish the
+final audit Merkle root and chain head through an injected signing/publication
+hook.
+
+Any failed preparation or finalization stage attempts rollback and cleanup. The
+returned error retains the primary, rollback, cleanup, audit, and publication
+failures that occurred; failures are not converted into success-shaped results.
+
+## Permission supervisor
+
+The version 1 permission supervisor preserves the Swift categories and risk
+classification intent while making decisions replay-safe and deterministic:
+
+- categories: command, network, file write, secret access, and system call;
+- one-time, session, and glob-pattern approvals;
+- expiry and use limits;
+- exact deny-always rules with deny-first precedence;
+- prompt budgets, non-interactive denial, and injected approval handlers;
+- caller-clock deadline checks without UI or real-time sleeps;
+- revocation and bounded decision history.
+
+The default, strict, and autonomous configurations retain the Swift prompt
+budgets, session-grant flags, timeout values, and autonomous wildcard rules. A
+zero timeout disables deadline expiry. When session grants are disabled,
+`approveForSession` falls back to the Swift one-time behavior. That behavior
+records the current approval and creates one exact-action use for the next
+matching check.
+
+`denyAlways` is the intentional redesign exception: Swift only recorded the
+denial and would prompt again. Rust persists an exact deny rule, checks it before
+positive grants, and requires explicit revocation. This strengthens denial
+without broadening permission.
+
+Canonical JSON state includes the session ID, generation, previous state hash,
+current state hash, grants, deny rules, replay set, prompt counters, and history.
+Every mutation advances the generation and is emitted through a
+`PermissionEventSink`. `AuditPermissionEventSink` records the generation and
+state hash in the session audit chain.
+
+`SharedPermissionSupervisor` serializes only non-interactive checks so use-limited
+grant consumption remains atomic without holding a mutex across an approval
+handler. Interactive approval remains owned by the orchestration layer.
+
+The supervisor checkpoint is an external high-water mark. Loading an older
+generation, an equivocated state at the same generation, an unlinked next
+generation, or a generation jump is rejected. The checkpoint must be stored
+outside the supervisor file, normally in the tamper-evident audit publication.
+
+## Migration
+
+Migration inspection is bounded and dry-run-only. Readers cover:
+
+| Source | Verification/report behavior |
+|---|---|
+| Swift audit entries and Merkle tree | Verifies the legacy hash chain and optional tree |
+| Swift snapshot manifest | Validates ordering, paths, hashes, sizes, and permissions |
+| Swift provenance trust store | Reports unsigned or zero-threshold policy broadening |
+| Swift provenance signature | Validates structure; cryptographic verification still requires caller content and key |
+| Secret metadata | Lists record versions without retrieving or rewriting values |
+| Swift Codable grants | Observational import reader; no persisted Swift grant store is assumed |
+
+Conversion proposals require an authorization derived from the exact dry-run
+report. Permission-broadening proposals also require a separate explicit
+acknowledgement. These APIs never write artifacts, migrate secrets, or weaken
+permissions automatically.
+
+## Production integration
+
+`sendbox-host` validates that state and workspace roots are disjoint, then
+prepares this lifecycle before runtime execution. The production adapter
+persists supervisor checkpoints, signs audit publication, captures and verifies
+snapshots, restores eligible mutations on failure, and quarantines changed
+excluded cache/dependency entries. Runtime cleanup still runs when security
+finalization fails, and all primary, rollback, audit, publication, and cleanup
+failures remain visible.
+
+[Governed sessions](governed-sessions.md#audit) append governance admission
+and credential grant and request records to the same signed audit chain. Each
+record names the profile revision and the binding digest signed into the
+boundary plan, and never includes credential material. A failure to record
+relay evidence fails the run. A session that lifted a policy exception is
+stopped when the exception expires, which follows the normal cancellation and
+rollback path.

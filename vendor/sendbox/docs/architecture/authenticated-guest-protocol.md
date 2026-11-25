@@ -1,0 +1,268 @@
+# Authenticated Host/Guest Protocol
+
+This document defines the protocol invariants implemented by
+`sendbox-protocol` and qualified through the Apple and Kata runtime transports.
+
+## Security boundary
+
+Each sandbox session receives a high-entropy bootstrap secret before untrusted
+agent code starts. `sendbox-runtime` owns the transport-neutral provisioning and
+lifecycle contract; concrete runtime endpoint mappings remain outside this
+crate. The secret must be unique per session and available only to the trusted
+host and guest bootstrap processes.
+
+The protocol provides mutual session authentication and integrity. It does not
+encrypt general payloads. Runtime adapters must provide transport confidentiality
+for ordinary confidential messages. Secret values are never placed directly in
+frames: `agent.launch` carries XChaCha20-Poly1305 envelopes bound to the session,
+guest role, secret name, sequence, expiry, and policy digest.
+Long-lived trust roots, release signing, policy signing, and rollback floors are
+separate versioned trust domains rather than protocol-session keys.
+
+Apple and Kata bootstrap also carry the schema-v3 signed boundary plan, the
+session-derived schema-v3 egress runtime policy, the exact hierarchical MCP
+runtime policy, the delegated execution cgroup parent, and gateway-only
+credential material. The guest validates policy equivalence before starting
+mandatory services. Gateway credential names must exactly match the signed MCP
+policy and remain disjoint from workload secret names; values are zeroized after
+delivery to the trusted gateway. Egress and MCP audit become ready before Exec,
+and remote MCP readiness additionally requires the loopback HTTP gateway,
+reserved-origin policy, marked dialing path, and kernel rules to be armed.
+
+When package analysis is enabled, the encrypted bootstrap additionally carries
+the strict package policy, workload-facing and registry-only ports, private
+cache and report paths, the dedicated proxy UID/GID, and zeroizing registry
+credentials. Registry credential references are separate from
+`agent.launch` secrets and cannot overlap them. Readiness then also requires
+the trusted registry SOCKS gateway and isolated npm proxy.
+
+## Roles and versions
+
+- `HostClient` initiates the handshake.
+- `GuestServer` responds.
+- Post-handshake frames explicitly declare `HostToGuest` or `GuestToHost`.
+- The current protocol version is `1`.
+- Each peer advertises an inclusive supported version range. The negotiated
+  version is the highest common version.
+
+Role, version-range, session, nonce, capability, required-capability, and frame
+limit fields are authenticated. A reflected role, wrong session, unsupported
+range, altered negotiation, or repeated handshake is terminal.
+
+## Canonical wire encoding
+
+Messages use deterministic CBOR encoded by `minicbor`. Wire objects are
+fixed-length arrays with fixed field order and numeric discriminants. Maps,
+indefinite arrays, duplicate capability identifiers, trailing values, alternate
+integer widths, and other noncanonical encodings are rejected by decoding and
+canonical re-encoding.
+
+Message kinds are:
+
+1. hello
+2. capability negotiation
+3. readiness
+4. request
+5. response
+6. event
+7. cancellation
+8. graceful close
+9. protocol error
+
+Capabilities are typed identifiers for lifecycle, exec, streamed I/O, signals,
+mounts, network, MCP, audit, and health. Authenticated framing remains version
+1. The launch operational schema is separately versioned by
+`OPERATION_SCHEMA_VERSION = 2`: `agent.launch` carries an exact program,
+argument vector, absolute working directory, bounded non-secret environment,
+policy-bound secret envelopes, and timeout; its terminal response carries
+exit/signal or a typed cancellation/failure state plus broker cleanup
+completion. Existing frame vectors are unchanged.
+
+Interactive launch schemas are negotiated by operation name rather than by adding a
+wire capability. Legacy hosts use `agent.launch.interactive` with the V1 request.
+Flow-controlled hosts use `agent.launch.interactive.v2`, whose request also selects
+optional stderr separation. A new guest accepts both operations; an old guest rejects
+the unknown V2 operation before either peer can exchange V2-only event kinds.
+
+After accepting V2, the guest may emit `TerminalInputCredit` events carrying a
+strictly positive credit count no larger than the negotiated 64-chunk window. The
+host does not read terminal input until the first grant arrives. `StandardInput`,
+`StandardInputEof`, and `TerminalResize` retain their existing discriminants;
+`TerminalInputCredit` is appended as event kind 9, so old discriminants and persisted
+readers remain stable.
+
+Safe Outputs uses `safe_outputs.collect` schema version 1. The host can request
+it only after a terminal result with complete broker cleanup. The guest returns
+one bounded base64 artifact and authenticated seal, then rejects duplicate
+collection. It is negotiated solely by the distinct operation name so the
+legacy capability wire profile remains compatible with older peers. A required
+collection rejected as unsupported is a hard downgrade failure. When Safe
+Outputs is configured, authenticated readiness must also include healthy
+mandatory `exec` and `safe_outputs` service identities.
+
+The package report operational schema is independently versioned by
+`PACKAGE_REPORT_SCHEMA_VERSION = 1`. `package.report` uses request ID `2` after
+the launch request's terminal response. Its request contains a positive bounded
+`maximum_bytes`; its response contains the exact report JSON and a
+`sha256:<lowercase-hex>` digest. Package-enabled plans require the `Audit`
+capability.
+
+Safe Outputs uses request ID `3`, distinct from launch and package reporting.
+
+`network.report` is an independently versioned schema-v1 operation using request
+ID `5`. A signed `network_github_meta` admission requires its collection and the
+existing `Audit` capability. After the launch terminal response, the guest
+captures the latest root-owned workload/registry Meta status files once,
+together with the authenticated configured policies. Reads use the same
+descriptor-relative regular-file, owner, mode and link checks as package
+reports.
+
+The report is bounded to 4 MiB and transferred as sequential 32-KiB base64
+chunks under the existing frame limit. Every response repeats the total,
+offset and whole-report SHA-256. The host rejects unexpected offsets, changing
+identities, malformed or oversized chunks, unsupported schemas, and digest
+mismatches; the entire retrieval has a 30-second deadline. Source refreshes
+cannot mix two snapshots during transfer. There is no new wire capability
+discriminant or protocol-version change; an older peer rejects the distinct
+operation. The host atomically persists the validated JSON with mode `0600`,
+records its digest in signed session provenance, and includes a compact
+`network_report: {path, sha256}` reference in `run --json`.
+
+[Governed sessions](governed-sessions.md) with brokered credential services
+append event kinds 10 to 15 for the credential relay (schema version 1):
+`CredentialRelayRequest`, `CredentialRelayRequestBody`, and
+`CredentialRelayCredit` travel guest to host, `CredentialRelayResponseHead` and
+`CredentialRelayResponseBody` travel host to guest, and `CredentialRelayEnd`
+closes a stream in either direction. The guest chooses strictly increasing
+stream identifiers starting at `1 << 32`, so they never collide with request
+IDs. Response bodies use 32 KiB chunks, and the host never has more than 16
+uncredited chunks outstanding per stream. Relay events carry no credential
+material. There is no new capability discriminant: a brokered plan requires the
+guest's authenticated readiness to report a healthy `credential_relay`
+service, and the host rejects relay events in a session without a brokered
+relay.
+
+## Terminal post-processing ordering
+
+The launch request remains request ID `1`. If package analysis is configured,
+or Safe Outputs is enabled, the host follows this exact sequence:
+
+1. receive the launch terminal response and all preceding output;
+2. if configured, send one `package.report` request with request ID `2` and
+   validate response status, schema, byte limit, and digest;
+3. if configured, collect `network.report` with request ID `5`, then the syscall
+   report with request ID `4`;
+4. if configured, send one `safe_outputs.collect` request with request ID `3`
+   and validate the authenticated artifact and seal;
+5. send graceful close; and
+6. independently revalidate and persist or apply the collected host-side
+   reports and operations.
+
+The guest rejects a report request before the terminal response, after a
+successful report response, when no report source is configured, or when the
+request exceeds the policy/protocol limit. It reads the source
+descriptor-relatively without following symlinks and requires the configured
+owner, group, mode, regular-file type, and link count. Retrieval failure is an
+explicit rejected response and fails a package-enabled run.
+
+The report carries no credentials. Authentication protects correlation and
+integrity in transit; the host still recomputes the digest and checks canonical
+JSON, summary counts, session ID, package-policy digest, record and finding
+limits before accepting it.
+
+## Handshake
+
+1. The host sends a hello containing magic, version range, session ID,
+   `HostClient`, a 32-byte operating-system-generated nonce, advertised and
+   required capabilities, and its frame limit.
+2. The guest validates the hello, selects the highest common version, computes
+   the capability intersection, verifies both peers' required capabilities, and
+   selects the lower frame limit.
+3. The guest sends its version range, selected version, session ID,
+   `GuestServer`, both nonces, advertised and required capabilities, negotiated
+   capabilities, frame limit, and a negotiation proof.
+4. HKDF-SHA256 uses the injected bootstrap secret and a transcript hash as salt.
+   Distinct labels derive negotiation, host-to-guest, and guest-to-host
+   HMAC-SHA256 keys.
+5. The host verifies the negotiation proof using canonical hello bytes and
+   canonical negotiation bytes excluding the proof field.
+6. The host and guest exchange directional authenticated readiness proofs. No
+   application message is accepted before both proofs verify.
+
+The transcript binds both advertised version ranges, both capability sets, both
+required-capability sets, both nonces, both roles, the session ID, the selected
+version, the negotiated capabilities, and the negotiated frame limit.
+
+## Authenticated frame layout
+
+Each stream frame is:
+
+```text
+u32 big-endian CBOR length
+CBOR [
+  magic,
+  version,
+  session_id,
+  direction,
+  sequence,
+  message,
+  hmac_sha256
+]
+```
+
+The HMAC covers the canonical unsigned CBOR array containing every field except
+the HMAC. The four-byte length prefix is not authenticated; it is validated
+before allocation and is bounded independently.
+
+Sequence numbers start at zero and increase strictly by one in each direction.
+Replay, gaps, overflow, wrong direction, wrong session, tampering, and
+noncanonical frames fail explicitly. A rejected frame never advances receive
+state and terminally poisons the connection.
+
+## Limits and backpressure
+
+- Hard frame ceiling: 1 MiB.
+- Default frame ceiling: 256 KiB.
+- Package report policy ceiling: 96 KiB, leaving room for JSON escaping and
+  operation framing below the default frame ceiling.
+- Peers may configure lower limits; the handshake authenticates the lower value.
+- The decoder reads only the four-byte prefix before validating the declared
+  length. Payload storage is allocated only after validation.
+- Receive buffering never exceeds the validated frame plus its prefix.
+- Async writes use `write_all` and naturally apply transport backpressure.
+- V2 terminal input is additionally bounded to 64 authenticated chunks of at most
+  4 KiB each. Credits travel guest-to-host without blocking the guest socket reader,
+  and end of file remains outside the credit budget.
+- Credential relay responses are bounded to 16 outstanding 32 KiB chunks per
+  stream and to the profile's concurrent stream limit, so a slow agent cannot
+  stall terminal or control traffic.
+
+Dropping a receive future is resumable because already-read bytes remain in the
+bounded reader buffer. Dropping a send future can leave a partial frame on the
+stream, so it terminally poisons the local connection instead of allowing an
+ambiguous retry.
+
+## Transport abstraction and errors
+
+Handshake and framed APIs operate on `AsyncRead + AsyncWrite`. The crate contains
+no runtime adapter and assigns no vsock, Unix-socket, control-socket, or stdio
+mapping. In-memory duplex and real Unix-domain socket tests prove the adapter
+point on macOS and Linux.
+
+EOF before a frame is distinct from EOF during a frame. Authentication,
+canonicalization, negotiation, replay, ordering, sequence exhaustion, frame
+limit, and I/O failures are explicit errors. There is no success-shaped fallback
+or resynchronization after an invalid authenticated frame.
+
+## Remaining qualification
+
+Before a runtime mapping is accepted, ADR-002 and ADR-005 still require:
+
+- confidentiality and trust-root decisions for that transport;
+- live Apple, Kata, and Hyperlight cancellation, streaming, backpressure, and
+  lifecycle qualification;
+- timeout and resource-exhaustion policy at the adapter/supervisor layer;
+- bootstrap-secret provisioning, rotation, rollback prevention, and compromise
+  response;
+- runtime-specific capability removal when a lifecycle behavior cannot be
+  proven.

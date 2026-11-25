@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Execution broker | SendBox docs</title>
+  <meta name="description" content="Status: production runtime integration.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Execution broker | SendBox docs">
+  <meta property="og:description" content="Status: production runtime integration.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/execution-broker/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/execution-broker/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Execution broker</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="production-execution-broker">Production Execution Broker</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#security-boundary">Security boundary</a></li>
+<li><a href="#agentruntime-ownership">Agent/runtime ownership</a></li>
+<li><a href="#typed-contract">Typed contract</a></li>
+<li><a href="#policy-compilation">Policy compilation</a></li>
+<li><a href="#descriptor-safe-launch">Descriptor-safe launch</a></li>
+<li><a href="#atomic-containment-and-cleanup">Atomic containment and cleanup</a></li>
+<li><a href="#service-authentication">Service authentication</a></li>
+<li><a href="#required-linux-primitives">Required Linux primitives</a></li>
+<li><a href="#adr-001-gap-status">ADR-001 gap status</a></li>
+</ol>
+</nav>
+<p>Status: <strong>production runtime integration</strong>.</p>
+<p><code>sendbox-exec</code> implements ADR-001's execution-mediation contract without
+depending on a guest supervisor or runtime adapter. <code>sendbox-guest</code> and
+<code>sendbox-host</code> integrate it into authenticated Apple and Kata sessions. The
+historical <code>spikes/exec-broker</code> crate remains the Phase 1 qualification record.</p>
+<h2 id="security-boundary">Security boundary</h2>
+<p>The broker makes semantic decisions for one typed, top-level execution request.
+An admitted command and its descendants inherit kernel containment, but the
+broker does not recursively parse or authorize descendant argv.</p>
+<figure class="diagram">
+<pre tabindex="0"><code class="language-mermaid">flowchart LR
+    A[Agent after trusted bootstrap] --&gt;|authenticated typed request| B[Broker]
+    A -. seccomp denies .-&gt; X[Direct execve and execveat]
+    B --&gt;|sanitized request and immutable decision| L[Dedicated launcher]
+    L --&gt;|openat2 descriptors| F[Approved executable and CWD]
+    L --&gt;|clone3 into configured leaf| C[cgroup v2 command tree]
+    C --&gt;|execveat approved FD| P[Command and descendants]
+    L -. timeout, cancellation, disconnect, or broker EOF .-&gt; K[cgroup.kill and pidfd reap]</code></pre>
+<figcaption>Diagram source (Mermaid). <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/execution-broker.md">View it rendered on GitHub</a>.</figcaption>
+</figure>
+<p>The trusted bootstrap must install <code>PR_SET_NO_NEW_PRIVS</code> and a TSYNC seccomp
+filter before any untrusted input, plugin, tool, or model-controlled callback.
+Providers that cannot guarantee that ordering cannot claim semantic command
+enforcement.</p>
+<h2 id="agentruntime-ownership">Agent/runtime ownership</h2>
+<p>The host agent reaches this broker through the runtime-owned authenticated guest
+control channel. <code>sendbox-agent</code> validates <code>BrokeredExec</code> and guest <code>Exec</code>
+capabilities before launch and sends the workload over that channel.
+<code>RuntimeProvider::exec</code> is reserved for trusted bootstrap and control operations;
+it is not an alternate workload path. Apple and Kata wire this through their
+authenticated supervisor transport. Third-party CLI agents are brokered
+top-level workloads; their spawned tools inherit kernel/VM containment, not
+recursive semantic argv authorization.</p>
+<h2 id="typed-contract">Typed contract</h2>
+<p><code>ExecutionRequest</code> carries:</p>
+<ul>
+<li>the <code>SessionId</code>, 32-byte session authentication value, correlation ID, and
+optional cancellation ID;</li>
+<li>an exact argv vector that is never joined, quoted, shell-parsed, or passed
+through <code>/usr/bin/env</code>;</li>
+<li>executable and working-directory paths relative to named, pre-opened roots;</li>
+<li>a bounded, explicit environment and <code>/dev/null</code> stdin;</li>
+<li>a timeout and per-command containment profile.</li>
+</ul>
+<p><code>ExecutionDecision</code> records allow or deny, the matched rule, and
+<code>SemanticScope::TopLevelOnly</code>. <code>ExecutionEvent</code> streams started, stdout, stderr,
+and terminal events. The terminal result separates the execution cause from a
+truthful cleanup status: no child, complete cleanup, or incomplete cleanup with
+the failed step.</p>
+<h2 id="policy-compilation">Policy compilation</h2>
+<p><code>sendbox-policy::CommandPolicy</code> is compiled once into immutable broker rules.
+Deny rules take precedence and the configured default action remains explicit.</p>
+<p>The production grammar preserves argv boundaries:</p>
+<ul>
+<li>ASCII whitespace separates rule tokens.</li>
+<li>Backslash escapes the next character.</li>
+<li>Unescaped <code>*</code> and <code>?</code> match only within one argv token.</li>
+<li>A rule matches exactly the number of tokens it declares.</li>
+<li>Quotes, substitutions, expansions, and shell reparsing do not exist.</li>
+</ul>
+<p>This deliberately does not preserve legacy joined-command-string ambiguity.
+For example, <code>git *</code> matches <code>[&quot;git&quot;, &quot;status --short&quot;]</code>, but it does not match
+<code>[&quot;git&quot;, &quot;status&quot;, &quot;--short&quot;]</code>.</p>
+<h2 id="descriptor-safe-launch">Descriptor-safe launch</h2>
+<p>The launcher opens every trusted root with <code>O_PATH|O_DIRECTORY|O_NOFOLLOW</code>.
+Executable and CWD resolution uses:</p>
+<pre tabindex="0"><code class="language-text">openat2(
+  RESOLVE_BENEATH |
+  RESOLVE_NO_MAGICLINKS |
+  RESOLVE_NO_SYMLINKS |
+  RESOLVE_NO_XDEV
+)</code></pre>
+<p>The resulting descriptors and device/inode identities are retained. Renaming or
+replacing the original path cannot change the approved object. The child changes
+directory with the approved CWD descriptor and executes only the approved
+executable descriptor through <code>execveat(AT_EMPTY_PATH)</code>.</p>
+<p>There is no path-based fallback. Missing <code>openat2</code> or <code>execveat</code> support is a
+typed, fail-closed <code>UnsupportedKernel</code> result.</p>
+<h2 id="atomic-containment-and-cleanup">Atomic containment and cleanup</h2>
+<p>The launcher is a dedicated single-threaded process. It creates and configures a
+fresh command leaf below a supervisor-owned cgroup v2 subtree before creating a
+child. <code>clone3(CLONE_INTO_CGROUP|CLONE_PIDFD)</code> places the child atomically in
+that leaf and returns a pidfd. There is no spawn-before-registration fallback
+and no numeric PID or process-group ownership decision.</p>
+<p>The command tree receives:</p>
+<ul>
+<li>cgroup <code>pids.max</code>, memory, swap, and optional CPU limits;</li>
+<li>POSIX descriptor, process, core, file-size, and address-space limits;</li>
+<li>an empty capability bounding/effective/permitted/inheritable set;</li>
+<li>NNP and a dangerous-syscall denylist;</li>
+<li>a child-only seccomp rule denying <code>clone3</code>, preventing pointer-based namespace
+flag bypass after the trusted launcher has used <code>clone3</code> itself;</li>
+<li>a constrained environment and no inherited control, cgroup, or launcher FDs.</li>
+</ul>
+<p><code>clone3</code> remains unconditionally denied after the trusted launch, but returns
+<code>ENOSYS</code> rather than <code>EPERM</code>. Modern glibc uses <code>clone3</code> for <code>pthread_create</code> and
+falls back to classic <code>clone</code> only when it is unavailable. The fallback stays
+inside the existing namespace-flag filters, capability drop, NNP, inherited
+seccomp, and cgroup containment. No pointer-based clone arguments are admitted.
+Other dangerous-syscall denials still return <code>EPERM</code>; the trusted launcher's
+atomic <code>clone3(CLONE_INTO_CGROUP|CLONE_PIDFD)</code> path is unchanged.</p>
+<p>Cleanup order is fixed:</p>
+<ol>
+<li>record timeout, cancellation, disconnect, saturation, shutdown, supervisor
+death, exit, or launch failure;</li>
+<li>write <code>1</code> to <code>cgroup.kill</code>;</li>
+<li>wait for and reap the leader through its pidfd;</li>
+<li>observe <code>cgroup.events</code> report <code>populated 0</code> within the configured bound;</li>
+<li>remove the command leaf and supervisor subtree.</li>
+</ol>
+<p>Unexpected broker control-pipe EOF is treated as supervisor death. The
+independent launcher remains alive long enough to perform the same cleanup.</p>
+<h2 id="service-authentication">Service authentication</h2>
+<p>Each service instance creates a new session-named runtime directory with mode
+<code>0700</code>, a create-exclusive credential file with mode <code>0600</code>, and a Unix socket
+with mode <code>0600</code>. Existing paths are never unlinked or reused. Both peers check
+socket type, owner, and mode; accepted and connected streams are authenticated
+with Linux <code>SO_PEERCRED</code>.</p>
+<p>The service is session-scoped. Frames are bounded typed records.
+<code>sendbox-protocol</code>, the production guest supervisor, and the Apple/Kata
+adapters provide the authenticated host/guest transport.</p>
+<h2 id="required-linux-primitives">Required Linux primitives</h2>
+<p>Production launch fails closed with the exact unavailable primitive:
+<code>openat2</code>, <code>execveat(AT_EMPTY_PATH)</code>, <code>clone3(CLONE_INTO_CGROUP|CLONE_PIDFD)</code>,
+pidfds, <code>waitid(P_PIDFD)</code>, cgroup v2 delegation, <code>cgroup.kill</code>, seccomp TSYNC,
+or <code>SO_PEERCRED</code>.</p>
+<h2 id="adr-001-gap-status">ADR-001 gap status</h2>
+<div class="table-scroll" role="group" aria-label="ADR-001 gap status table" tabindex="0">
+<table>
+<thead><tr><th scope="col">ADR-001 concern</th><th scope="col">Status</th></tr></thead>
+<tbody>
+<tr><td>Exact top-level argv admission without shell reinterpretation</td><td>Closed</td></tr>
+<tr><td>Direct agent <code>execve</code> and <code>execveat</code> after trusted bootstrap</td><td>Closed</td></tr>
+<tr><td>Symlink, rename, and path-resolution TOCTOU</td><td>Closed by retained <code>openat2</code> descriptors and <code>execveat</code></td></tr>
+<tr><td>Spawn before supervisor registration</td><td>Closed by <code>CLONE_INTO_CGROUP</code></td></tr>
+<tr><td>PID and PGID reuse during cleanup</td><td>Closed by pidfd and cgroup descriptor ownership</td></tr>
+<tr><td>Child-tree cleanup after timeout, cancellation, disconnect, or broker death</td><td>Closed by <code>cgroup.kill</code> and bounded removal</td></tr>
+<tr><td>Recursive semantic authorization of descendant commands</td><td>Remaining by design</td></tr>
+<tr><td>Safe voluntary lockdown by an arbitrary malicious agent binary</td><td>Remaining; trusted bootstrap is mandatory</td></tr>
+<tr><td>Complete guest/VM containment</td><td>Remaining; runtime and VM integration are separate layers</td></tr>
+<tr><td>Guest supervisor and runtime-adapter wiring</td><td>Closed by production guest supervisor and Apple/Kata composition</td></tr>
+</tbody>
+</table>
+</div>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/execution-broker.md"><code>docs/architecture/execution-broker.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/execution-broker.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../runtime-core/"><span class="pager-label">Previous</span> Runtime core</a>
+<a class="pager-next" href="../guest-supervisor/"><span class="pager-label">Next</span> Guest supervisor</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="./" aria-current="page">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

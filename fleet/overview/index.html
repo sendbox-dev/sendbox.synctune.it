@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Overview and quick start | SendBox Fleet docs</title>
+  <meta name="description" content="What SendBox Fleet does, its status and a local quick start.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Overview and quick start | SendBox Fleet docs">
+  <meta property="og:description" content="What SendBox Fleet does, its status and a local quick start.">
+  <meta property="og:url" content="https://sendbox.synctune.it/fleet/overview/">
+  <link rel="canonical" href="https://sendbox.synctune.it/fleet/overview/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../sendbox/">SendBox docs</a></li>
+        <li><a href="../" class="is-active">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox Fleet docs</a></li>
+<li><span aria-current="page">Overview and quick start</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox Fleet docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox Fleet · Get started</p>
+<h1 id="sendbox-fleet">sendbox-fleet</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#status">Status</a></li>
+<li><a href="#quick-start">Quick start</a></li>
+<li><a href="#documentation">Documentation</a></li>
+<li><a href="#license">License</a></li>
+</ol>
+</nav>
+<p>Shared governance service for <a href="https://github.com/sendbox-dev/sendbox">SendBox</a> governed sessions: operator-signed policy profiles shared across users and hosts, project-scoped roles, session admission, credential grant authorization and revocation, approved expiring exceptions, and a hash-chained central audit log. It is increment 2 of <a href="https://github.com/sendbox-dev/sendbox/issues/87">mbianchidev/sendbox#87</a>.</p>
+<p>Provider credentials never reach this service; they stay in the SendBox host broker.</p>
+<h2 id="status">Status</h2>
+<p>Feature-complete for increment 2 and usable for team deployments:</p>
+<ul>
+<li>Signed profiles, project roles, session admission, grants, per-request authorization, revocation, and exceptions with a different approver.</li>
+<li>Sign-in with any OpenID Connect provider (people and CI such as GitHub Actions), exchanged for short-lived service tokens; admin-issued tokens for bootstrap.</li>
+<li>Hash-chained audit with host-reported request outcomes, signed chain heads, and anchoring outside the database.</li>
+<li>Operations: PostgreSQL least-privilege roles, rate limits, Prometheus metrics, size and daily log rotation, deployment and backup guidance.</li>
+</ul>
+<p>Not yet done: a governed session on Apple or Kata against real model providers through a deployed fleet. That run is host-side work tracked in <a href="https://github.com/sendbox-dev/sendbox/issues/96">mbianchidev/sendbox#96</a>. See the <a href="../roadmap/">roadmap</a>.</p>
+<h2 id="quick-start">Quick start</h2>
+<pre tabindex="0"><code class="language-sh">export FLEET_DATABASE_URL='sqlite://sendbox-fleet.db?mode=rwc'
+cargo run --bin sendbox-fleet -- admin principal add oidc:you@example.com --kind user --operator
+cargo run --bin sendbox-fleet -- admin token issue oidc:you@example.com &gt; you.token
+cargo run --bin sendbox-fleet
+curl -H &quot;Authorization: Bearer $(cat you.token)&quot; http://127.0.0.1:8080/v1/whoami</code></pre>
+<p>Set <code>FLEET_PROFILE_TRUST</code> to publish signed profiles; see <a href="../development/#bootstrap-principals-tokens-and-projects">development</a>. With PostgreSQL: <code>cp .env.example .env</code>, set <code>POSTGRES_PASSWORD</code>, then <code>docker compose build --no-cache &amp;&amp; docker compose up</code>. For a shared setup, follow <a href="../deployment/">deployment</a>.</p>
+<h2 id="documentation">Documentation</h2>
+<ul>
+<li><a href="../architecture/">Architecture</a>: relationship to SendBox, trust boundaries, authentication, roles, API surface, schema, audit</li>
+<li><a href="../deployment/">Deployment</a>: TLS, database roles, identity providers, audit anchoring, metrics, backups</li>
+<li><a href="../contract/">Shared contract</a>: how <code>sendbox-governance</code> is pinned and versioned</li>
+<li><a href="../threat-model/">Threat model</a></li>
+<li><a href="../roadmap/">Roadmap</a>: delivered and remaining work mapped to the issue's acceptance criteria</li>
+<li><a href="../development/">Development</a>: configuration, bootstrap, local runs, tests, logs</li>
+<li><a href="../contributing/">Contributing</a> and <a href="../security-policy/">security</a></li>
+</ul>
+<h2 id="license">License</h2>
+<p><a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/LICENSE">Apache-2.0</a></p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/README.md"><code>README.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox-fleet">sendbox-dev/sendbox-fleet</a> at commit <a href="https://github.com/sendbox-dev/sendbox-fleet/commit/962a6cf18913e41995dfde12c872be9497d2b1e9"><code>962a6cf</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox-fleet/edit/main/README.md">edit it in sendbox-dev/sendbox-fleet</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-next" href="../deployment/"><span class="pager-label">Next</span> Deployment</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox Fleet documentation">
+<p class="nav-project"><a href="../">SendBox Fleet docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="./" aria-current="page">Overview and quick start</a></li>
+<li><a href="../deployment/">Deployment</a></li>
+<li><a href="../architecture/">Architecture</a></li>
+<li><a href="../contract/">Shared contract</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../threat-model/">Threat model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../development/">Development</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

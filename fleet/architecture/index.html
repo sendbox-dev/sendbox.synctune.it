@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architecture | SendBox Fleet docs</title>
+  <meta name="description" content="Relationship to SendBox, trust boundaries, authentication, roles, API surface, schema and audit.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Architecture | SendBox Fleet docs">
+  <meta property="og:description" content="Relationship to SendBox, trust boundaries, authentication, roles, API surface, schema and audit.">
+  <meta property="og:url" content="https://sendbox.synctune.it/fleet/architecture/">
+  <link rel="canonical" href="https://sendbox.synctune.it/fleet/architecture/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../sendbox/">SendBox docs</a></li>
+        <li><a href="../" class="is-active">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox Fleet docs</a></li>
+<li><span aria-current="page">Architecture</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox Fleet docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox Fleet · Get started</p>
+<h1 id="architecture">Architecture</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#relationship-to-sendbox-increment-1">Relationship to SendBox increment 1</a></li>
+<li><a href="#trust-boundaries">Trust boundaries</a></li>
+<li><a href="#authentication-is-separate-from-authorization">Authentication is separate from authorization</a></li>
+<li><a href="#roles">Roles</a></li>
+<li><a href="#request-flow">Request flow</a></li>
+<li><a href="#http-responses">HTTP responses</a></li>
+<li><a href="#persistence">Persistence</a></li>
+<li><a href="#audit">Audit</a></li>
+<li><a href="#logging">Logging</a></li>
+<li><a href="#code-layout">Code layout</a></li>
+</ol>
+</nav>
+<p><code>sendbox-fleet</code> is the shared governance service for SendBox governed sessions
+(<a href="https://github.com/sendbox-dev/sendbox/issues/87">mbianchidev/sendbox#87</a>).
+It is increment 2 of that issue: the authenticated, multi-user management API
+and central authority that increment 1 deliberately left out.</p>
+<p>It authenticates every <code>/v1</code> caller (service tokens or OpenID Connect),
+enforces project-scoped roles, verifies and publishes operator-signed
+profiles, admits governed sessions, issues and checks credential grants,
+records bounded and expiring exceptions and host-reported request outcomes,
+and keeps a hash-chained central audit log whose signed heads can be anchored
+outside the database. See <a href="../roadmap/">roadmap.md</a> for what remains and
+<a href="../deployment/">deployment.md</a> for running it.</p>
+<h2 id="relationship-to-sendbox-increment-1">Relationship to SendBox increment 1</h2>
+<p>Increment 1 lives in the <a href="https://github.com/sendbox-dev/sendbox">sendbox</a>
+repository and works on a single host:</p>
+<ul>
+<li>An operator signs a governance profile (the maximum a session may do). The
+host verifies it and binds its digest and revision into the session plan.</li>
+<li><code>LocalGrantAuthority</code> (in <code>sendbox-governance</code>) issues, authorizes, renews,
+and revokes credential grants in process.</li>
+<li>The host credential broker holds provider credentials and injects them into
+approved upstream requests. Agents only ever see a placeholder.</li>
+</ul>
+<p>Increment 2 moves the <em>authority</em> off the host, so several hosts and users
+share one set of profiles, roles, grants, exceptions, and audit evidence. The
+fleet implements the same <code>GrantAuthority</code> semantics over HTTP (both use
+<code>sendbox_governance::evaluate_request</code>); a SendBox host whose operator
+configuration has a <code>fleet</code> section uses its remote authority client instead
+of the local one. See SendBox's
+<a href="../../sendbox/architecture/governed-sessions/#shared-governance-service">shared governance service</a>
+for the host side.</p>
+<figure class="diagram">
+<pre tabindex="0"><code class="language-mermaid">flowchart LR
+    subgraph host[&quot;SendBox host (worker)&quot;]
+        vm[&quot;Agent VM&lt;br/&gt;(untrusted workload)&quot;]
+        broker[&quot;Credential broker&lt;br/&gt;(holds provider credentials)&quot;]
+    end
+    fleet[&quot;sendbox-fleet&lt;br/&gt;(authenticates, authorizes, audits)&quot;]
+    db[(&quot;PostgreSQL&quot;)]
+    people[&quot;Operators and project members&quot;]
+    provider[&quot;Model provider API&quot;]
+
+    vm -- &quot;request with placeholder credential&quot; --&gt; broker
+    broker -- &quot;admit / grant / authorize / revoke&quot; --&gt; fleet
+    broker -- &quot;request with injected credential&quot; --&gt; provider
+    people -- &quot;profiles, roles, exceptions, audit&quot; --&gt; fleet
+    fleet --&gt; db</code></pre>
+<figcaption>Diagram source (Mermaid). <a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/docs/architecture.md">View it rendered on GitHub</a>.</figcaption>
+</figure>
+<h2 id="trust-boundaries">Trust boundaries</h2>
+<ol>
+<li><strong>Workload to host broker.</strong> The agent VM is untrusted. It never receives
+provider credentials, and it cannot choose the principal, project, session,
+policy revision, or upstream that a request is attributed to. The broker
+builds every <code>RequestContext</code> from trusted host state.</li>
+<li><strong>Host to fleet.</strong> A SendBox host is an authenticated <em>worker</em> principal.
+The fleet never holds provider credentials: credential injection stays in
+the host broker, and the fleet only decides (admission, grants,
+per-request authorization) and records evidence. A
+compromised fleet can therefore authorize misuse but cannot leak provider
+keys; a compromised host is limited to the sessions and grants the fleet
+issued to it.</li>
+<li><strong>People to fleet.</strong> Operators and project members are authenticated <em>user</em>
+principals. What they may do is decided by project-scoped roles.</li>
+<li><strong>Fleet to database.</strong> The database stores identifiers, digests, signed
+profile bytes, and audit evidence. It stores no credentials, tokens,
+authorization headers, or request bodies; there are no columns for them.</li>
+</ol>
+<h2 id="authentication-is-separate-from-authorization">Authentication is separate from authorization</h2>
+<ul>
+<li><p><strong>Authentication</strong> answers &quot;who is calling&quot;. Every <code>/v1</code> request passes
+through <code>auth::require_bearer</code> <em>before</em> routing, so an unauthenticated
+request is rejected with <code>401</code> before its body is read. Only
+<code>Authorization: Bearer &lt;token&gt;</code> is accepted. Identity headers such as
+<code>X-Forwarded-User</code>, <code>X-Remote-User</code>, or <code>X-Sendbox-Principal</code> are ignored.
+Two kinds of bearer token are accepted:</p>
+<ul>
+<li><strong>Service tokens</strong> (<code>sbf_…</code>), issued with <code>sendbox-fleet admin token issue</code> or exchanged at <code>POST /v1/tokens</code>. Only their SHA-256 is stored,
+and a token works while it is unexpired (at most 90 days), unrevoked, and
+its principal is not disabled.</li>
+<li><strong>Identity-provider JWTs</strong> from an issuer in <code>FLEET_OIDC_CONFIG</code>. The
+signature must verify with the issuer's published keys, and <code>iss</code>, <code>aud</code>,
+<code>exp</code>, <code>nbf</code>, <code>iat</code>, required claims, and <code>email_verified</code> (for email
+principals) must pass. The principal is <code>&lt;prefix&gt;:&lt;claim&gt;</code>; it must exist,
+be active, and have the issuer's kind, unless the issuer may auto-provision
+it (with no roles). See <a href="../deployment/#identity-providers">deployment</a>.</li>
+</ul>
+<p>A failed token lookup or unreachable key set is <code>503</code>, never an implicit
+allow. Repeated failures from one peer address, and too many requests from
+one principal, get <code>429</code> with <code>Retry-After</code>.</p></li>
+<li><p><strong>Token exchange.</strong> <code>POST /v1/tokens</code> turns an identity-provider sign-in
+into a service token for hosts (<code>sendbox governance login</code>). Only JWT
+callers may exchange, so a service token cannot mint another. Lifetime
+defaults to <code>FLEET_TOKEN_TTL_SECONDS</code> and is capped by
+<code>FLEET_TOKEN_MAX_TTL_SECONDS</code>; a principal holds at most 20 live tokens.</p></li>
+<li><p><strong>Authorization</strong> answers &quot;may this caller do this&quot;. It combines the caller
+kind (<code>user</code> or <code>worker</code>), the fleet-wide <code>operator</code> flag, project roles,
+the current profile revision, admitted sessions, grants, and exceptions,
+all read from the database.</p></li>
+<li><p><strong>Workload identity fields are never authoritative.</strong> A binding or grant
+principal must equal the authenticated caller; a host cannot claim another
+identity. <code>local-user:</code> principals belong to single-host increment 1 and are
+rejected by both the API and the schema.</p></li>
+</ul>
+<h2 id="roles">Roles</h2>
+<div class="table-scroll" role="group" aria-label="Roles table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Who</th><th scope="col">May</th></tr></thead>
+<tbody>
+<tr><td>Operator (fleet-wide, users only)</td><td>Publish profiles, raise minimum revisions, create projects with a first owner, manage any project's roles, revoke grants and exceptions, read and verify all audit</td></tr>
+<tr><td><code>owner</code></td><td>Assign and remove roles (never leaving the project without an owner), approve or reject exceptions, run sessions</td></tr>
+<tr><td><code>admin</code></td><td>Approve or reject exceptions, revoke grants (<code>operator_revoked</code>, <code>policy_changed</code>), run sessions</td></tr>
+<tr><td><code>member</code></td><td>Run governed sessions, request exceptions</td></tr>
+<tr><td><code>viewer</code></td><td>Read roles, exceptions, and the project's audit events</td></tr>
+</tbody>
+</table>
+</div>
+<p>Workers never manage roles, profiles, or exceptions. A principal runs
+sessions as itself: it needs <code>member</code> or higher in the project.</p>
+<h2 id="request-flow">Request flow</h2>
+<div class="table-scroll" role="group" aria-label="Request flow table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Step</th><th scope="col">Endpoint</th><th scope="col">Checks</th></tr></thead>
+<tbody>
+<tr><td>Identify</td><td><code>GET /v1/whoami</code></td><td>Returns the authenticated principal, kind, and operator flag</td></tr>
+<tr><td>Admit a session</td><td><code>POST /v1/sessions:admit</code></td><td>Binding principal is the caller; binding names this authority (<code>FLEET_AUTHORITY_ID</code>); caller holds <code>member</code> or higher; profile reference is the current revision (at or above the minimum, unexpired, digest matches); brokered services exist in the profile; every bound exception is approved, unrevoked, unexpired, for this project and principal (or project-wide), bound to this exact revision, and permitted by it. Records the canonical binding</td></tr>
+<tr><td>End a session</td><td><code>POST /v1/sessions/{session}:end</code></td><td>Session principal only; revokes every live grant with the matching session reason</td></tr>
+<tr><td>Issue a grant</td><td><code>POST /v1/grants</code></td><td>Caller and request match the admitted session's binding exactly; session not ended; service admitted; methods and path prefixes inside the profile service; profile current; bound exceptions still valid. Lease from the profile; hard expiry capped by the profile TTL, profile expiry, the earliest bound exception expiry, and 7 days</td></tr>
+<tr><td>Authorize a request</td><td><code>POST /v1/authorize</code></td><td><code>evaluate_request</code> against shared state, plus: the caller is the grant principal, the session is not ended, bound exceptions are still valid. Every decision is audited with a redacted target</td></tr>
+<tr><td>Renew a lease</td><td><code>POST /v1/grants/{grant}:renew</code></td><td>Grant principal; not revoked or expired; lease not lapsed; session admitted; profile current; exceptions valid. Lease never exceeds the hard expiry or the earliest exception expiry</td></tr>
+<tr><td>Revoke a grant</td><td><code>POST /v1/grants/{grant}:revoke</code></td><td>Session reasons by the grant principal; <code>operator_revoked</code> and <code>policy_changed</code> by an <code>admin</code>, <code>owner</code>, or operator. New requests deny at once; the grace window is the profile's <code>revocation_grace_seconds</code> (at most 60)</td></tr>
+<tr><td>Publish a profile</td><td><code>PUT /v1/profiles/{profile}</code></td><td>Operator; body is the exact YAML plus the <code>sendbox.governance-signatures</code> bundle that <code>sendbox governance sign</code> writes; signatures must satisfy <code>FLEET_PROFILE_TRUST</code>; revisions only increase</td></tr>
+<tr><td>Read a profile</td><td><code>GET /v1/profiles/{profile}[?revision=N]</code></td><td>Any caller; the current revision is the newest whose <code>not_before_unix</code> has passed</td></tr>
+<tr><td>Raise the minimum</td><td><code>PUT /v1/profiles/{profile}/minimum-revision</code></td><td>Operator; minimums only rise; older revisions, and everything bound to them, become stale</td></tr>
+<tr><td>Create a project</td><td><code>POST /v1/projects</code></td><td>Operator; the owner must be an active principal</td></tr>
+<tr><td>List or change roles</td><td><code>GET</code> / <code>POST /v1/projects/{project}/roles</code>, <code>DELETE …/roles/{principal}</code></td><td>Listing needs any role (or operator); changes need <code>owner</code> (or operator); the last owner cannot be removed or demoted</td></tr>
+<tr><td>Request an exception</td><td><code>POST /v1/exceptions</code></td><td>User with <code>member</code> or higher; scope is a denial the current revision lists under <code>exceptions</code>; optional principal must be a member; expiry in the future, within the profile's <code>exceptions.max_ttl_seconds</code> (at most 7 days) and before the profile expires</td></tr>
+<tr><td>Decide an exception</td><td><code>POST /v1/exceptions/{id}:approve</code> / <code>:reject</code></td><td>User with <code>owner</code> or <code>admin</code>, not the requester; approval only while unexpired and its revision is still current</td></tr>
+<tr><td>Revoke an exception</td><td><code>POST /v1/exceptions/{id}:revoke</code></td><td>Requester, <code>owner</code>, <code>admin</code>, or operator. Sessions admitted with it are denied on their next request or renewal</td></tr>
+<tr><td>List exceptions</td><td><code>GET /v1/exceptions?project=…&amp;state=active|pending|all</code>, <code>GET /v1/exceptions/{id}</code></td><td>Any role in the project (or operator)</td></tr>
+<tr><td>Query audit events</td><td><code>GET /v1/audit/events</code></td><td>Operators read everything; others must pass a <code>project</code> in which they hold a role. Cursor pagination</td></tr>
+<tr><td>Verify the chain</td><td><code>GET /v1/audit/verify</code></td><td>Operator; recomputes every hash and link</td></tr>
+<tr><td>Signed chain head</td><td><code>GET /v1/audit/head</code></td><td>Operator; the current sequence and hash signed with <code>FLEET_AUDIT_SIGNING_KEY</code> (<code>503</code> without it)</td></tr>
+<tr><td>Exchange a sign-in</td><td><code>POST /v1/tokens</code></td><td>Identity-provider caller only; <code>ttl_seconds</code> in 60 to the maximum; returns the token once with <code>Cache-Control: no-store</code></td></tr>
+<tr><td>List or revoke tokens</td><td><code>GET /v1/tokens</code>, <code>DELETE /v1/tokens/{id}</code></td><td>Callers see and revoke their own tokens (never the secret); operators may revoke any</td></tr>
+<tr><td>Report an outcome</td><td><code>POST /v1/grants/{grant}:outcome</code></td><td>Grant principal; service must match the grant. Records the redacted method, path, outcome, reason, status, sizes, and duration as <code>request.outcome</code>. Outcomes are evidence only and never change a grant or a decision</td></tr>
+</tbody>
+</table>
+</div>
+<p>Project identifiers contain a slash (<code>github:owner/repo</code>), so clients
+percent-encode it in paths: <code>/v1/projects/github:owner%2Frepo/roles</code>.</p>
+<h2 id="http-responses">HTTP responses</h2>
+<p>Errors use RFC 9457 <code>application/problem+json</code> with <code>type: about:blank</code>, the
+standard reason phrase as <code>title</code>, and a specific <code>detail</code>.</p>
+<div class="table-scroll" role="group" aria-label="HTTP responses table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Status</th><th scope="col">When</th></tr></thead>
+<tbody>
+<tr><td><code>400</code></td><td>Body, path, or query does not match the contract</td></tr>
+<tr><td><code>401</code></td><td>Missing, malformed, or unaccepted bearer token (with <code>WWW-Authenticate: Bearer</code>)</td></tr>
+<tr><td><code>403</code></td><td>Authenticated, but the role, kind, operator flag, profile, or signer check refuses it</td></tr>
+<tr><td><code>404</code> / <code>405</code></td><td>Unknown resource or path, or unsupported method</td></tr>
+<tr><td><code>409</code></td><td>Stale profile revision, stale or inactive exception, already-decided exception, ended session, duplicate admission, last owner</td></tr>
+<tr><td><code>413</code> / <code>415</code></td><td>Body too large (64 KiB, 1 MiB for profile publication) or not JSON</td></tr>
+<tr><td><code>429</code></td><td>Rate limit; <code>Retry-After</code> gives the seconds to wait</td></tr>
+<tr><td><code>500</code></td><td>Internal failure; the cause is logged, never returned</td></tr>
+<tr><td><code>503</code></td><td>Authentication or <code>/readyz</code> cannot reach the database or identity-provider keys, profile publication without <code>FLEET_PROFILE_TRUST</code>, or <code>GET /v1/audit/head</code> without a signing key</td></tr>
+</tbody>
+</table>
+</div>
+<p>A per-request authorization denial is a <code>200</code> with <code>{&quot;decision&quot;: &quot;deny&quot;, &quot;reason&quot;: …}</code>; hosts deny on any other answer.</p>
+<p><code>GET /healthz</code> (liveness) and <code>GET /readyz</code> (database round trip) are
+unauthenticated and reveal nothing beyond availability.</p>
+<h2 id="persistence">Persistence</h2>
+<p><code>migrations/postgres</code> and <code>migrations/sqlite</code> define the same schema; the
+server applies the matching set at startup, or with <code>FLEET_MIGRATE=false</code>
+only checks that every migration was applied (by <code>sendbox-fleet admin migrate</code> under a schema-owner role). PostgreSQL is the shared deployment
+target; SQLite is for local development and tests.</p>
+<div class="table-scroll" role="group" aria-label="Persistence table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Table</th><th scope="col">Holds</th></tr></thead>
+<tbody>
+<tr><td><code>principals</code></td><td>Authenticated users and workers (never <code>local-user:</code>), with the operator flag</td></tr>
+<tr><td><code>api_tokens</code></td><td>SHA-256 of each service token (admin-issued or exchanged), description, expiry (at most 90 days), revocation</td></tr>
+<tr><td><code>projects</code></td><td><code>github:owner/repo</code> or <code>path-sha256:</code> projects</td></tr>
+<tr><td><code>role_bindings</code></td><td>One project-scoped role per principal per project</td></tr>
+<tr><td><code>profiles</code></td><td>Exact signed bytes, digest, signatures, validity window per revision</td></tr>
+<tr><td><code>profile_minimum_revisions</code></td><td>Oldest revision still accepted per profile</td></tr>
+<tr><td><code>sessions</code></td><td>Admitted sessions with their canonical binding and digest</td></tr>
+<tr><td><code>credential_grants</code></td><td>Grant scope, lease, hard expiry, generation; no credential material</td></tr>
+<tr><td><code>revocations</code></td><td>Reason, actor, bounded grace window</td></tr>
+<tr><td><code>exceptions</code></td><td>One liftable denial (<code>command</code>, <code>domain</code>, <code>network</code>), reason, requester, approver, expiry, revocation, exact profile revision</td></tr>
+<tr><td><code>session_exceptions</code></td><td>Exceptions each session was admitted with</td></tr>
+<tr><td><code>audit_events</code></td><td>Append-only, hash-chained evidence with a redacted target, the exception concerned, and a short non-secret detail</td></tr>
+</tbody>
+</table>
+</div>
+<p>Constraints carry the invariants the database can check: identifier grammar,
+7-day grant and exception lifetimes, 90-day tokens, a 60-second revocation
+grace, approvers who differ from requesters, grants whose principal, project,
+binding, and profile must equal their session's (composite foreign key), and
+audit rows that must extend the chain and can never be updated or deleted
+(triggers).</p>
+<p>Writers are serialized (SQLite <code>BEGIN IMMEDIATE</code>, PostgreSQL transaction
+advisory lock), so check-then-write decisions cannot race. Every state change
+and the audit event that records it commit in one transaction; a refused,
+security-relevant request commits only its audit event.</p>
+<h2 id="audit">Audit</h2>
+<p>Each event records the actor (the authenticated caller, or <code>cli:admin</code>), the
+principal, project, session, grant, exception, and profile revision it
+concerns, the decision and deny reason, an outcome, a redacted target
+(<code>METHOD service/path</code>, never a query string), and a short detail such as
+<code>role=admin</code> or <code>scope=domain:gist.github.com</code>. Credentials, tokens, headers,
+request or response bodies, and exception reasons are never recorded.</p>
+<p><code>event_hash</code> is the SHA-256 of the RFC 8785 canonical JSON of the event as
+returned by <code>GET /v1/audit/events</code> without <code>event_hash</code> (so it includes
+<code>previous_hash</code>). The first event links to 64 zeros. <code>GET /v1/audit/verify</code>
+recomputes the chain.</p>
+<p>The chain alone cannot stop someone who can rewrite the table and recompute
+every hash, such as a database owner. With <code>FLEET_AUDIT_SIGNING_KEY</code>, the
+service signs chain heads (<code>sendbox-fleet-audit-head</code> v1: authority,
+sequence, event hash, time) with an Ed25519 key in SendBox's provenance
+envelope. With <code>FLEET_AUDIT_ANCHOR_DIR</code>, it writes one to that directory at
+startup and on every interval in which the chain advanced, never overwriting
+an anchor. <code>sendbox-fleet admin audit verify --identity … --anchor …</code>
+recomputes the chain and checks each anchor's signature and that the database
+still holds its hash at its sequence.</p>
+<p>Other audit events added for authentication: <code>principal.provisioned</code>,
+<code>token.issued</code>, and <code>token.revoked</code> (token ids, never tokens).</p>
+<h2 id="logging">Logging</h2>
+<p>Structured JSON lines go to stdout and to <code>sendbox-fleet.YYYY-MM-DD.log</code> in
+<code>FLEET_LOG_DIR</code>, rotated at each UTC day and at <code>FLEET_LOG_MAX_BYTES</code>, and
+pruned after 30 days. Request
+bodies, headers, and query strings are never logged. Details in
+<a href="../development/#logs">development.md</a>.</p>
+<h2 id="code-layout">Code layout</h2>
+<pre tabindex="0"><code class="language-text">crates/fleet-server/src/
+  main.rs          process entry: serve (default) or `admin` subcommands
+  admin.rs         bootstrap: principals, tokens, projects, audit keys, migrate
+  server.rs        app assembly, startup, graceful shutdown, background tasks
+  config.rs        environment configuration and profile trust loading
+  state.rs         shared state: database, clock, random ids, authority id, trust, limits
+  oidc.rs          identity-provider configuration and JWT/JWKS verification
+  anchor.rs        signed audit heads, anchoring, anchor verification
+  ratelimit.rs     per-principal and per-peer token buckets
+  metrics.rs       Prometheus counters and the metrics listener
+  logging.rs       subscriber setup and request logging middleware
+  logging/rotation.rs, logging/retention.rs
+  db.rs            pools, migrations, readiness, backend-neutral transactions and rows
+  governance.rs    stored roles, profiles, sessions, grants, and exceptions
+  audit.rs         hash-chained append, queries, chain verification
+  problem.rs       RFC 9457 problem responses
+  auth.rs          bearer middleware, service-token and identity-provider authenticators
+  routes/          health probes and the /v1 API
+migrations/{postgres,sqlite}/
+deploy/postgres/roles.sql   least-privilege owner and runtime roles</code></pre>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/docs/architecture.md"><code>docs/architecture.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox-fleet">sendbox-dev/sendbox-fleet</a> at commit <a href="https://github.com/sendbox-dev/sendbox-fleet/commit/962a6cf18913e41995dfde12c872be9497d2b1e9"><code>962a6cf</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox-fleet/edit/main/docs/architecture.md">edit it in sendbox-dev/sendbox-fleet</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../deployment/"><span class="pager-label">Previous</span> Deployment</a>
+<a class="pager-next" href="../contract/"><span class="pager-label">Next</span> Shared contract</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox Fleet documentation">
+<p class="nav-project"><a href="../">SendBox Fleet docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../deployment/">Deployment</a></li>
+<li><a href="./" aria-current="page">Architecture</a></li>
+<li><a href="../contract/">Shared contract</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../threat-model/">Threat model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../development/">Development</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

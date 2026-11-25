@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qualification | SendBox docs</title>
+  <meta name="description" content="The qualification inventory, conformance checks and benchmarks.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Qualification | SendBox docs">
+  <meta property="og:description" content="The qualification inventory, conformance checks and benchmarks.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/qualification/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/qualification/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Qualification</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Contribute</p>
+<h1 id="qualification-inventory-conformance-and-benchmarks">Qualification inventory, conformance, and benchmarks</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#inventory-gate">Inventory gate</a></li>
+<li><a href="#conformance-gate">Conformance gate</a></li>
+<li><a href="#benchmark-gate">Benchmark gate</a></li>
+<li><a href="#apple-runtime-qualification">Apple runtime qualification</a></li>
+<li><a href="#hyperlight-runtime-qualification">Hyperlight runtime qualification</a></li>
+</ol>
+</nav>
+<p>The Phase 0/1 qualification data lives under <code>Tests/qualification/</code> and is
+validated by the isolated Rust tool in <code>tools/sendbox-qualification/</code>. The tool
+has its own workspace and lockfile so qualification dependencies do not become
+product dependencies.</p>
+<h2 id="inventory-gate">Inventory gate</h2>
+<p><code>inventory.v1.json</code> is the countable rewrite scope. It covers current Rust
+source modules, historical implementation decisions, CLI commands,
+configuration sections and defaults, runtime operations and capabilities,
+security modules, persisted formats, setup/completion/release surfaces, and
+top-level documented claims.</p>
+<p>Every entry has a stable ID, one of <code>preserve</code>, <code>redesign</code>, <code>defer</code>, or
+<code>remove</code>, repository evidence in <code>path#symbol-or-claim</code> form, a target Rust
+crate and phase, and a conformance status. Redesigns also require a
+compatibility note. Validation fails on duplicate IDs, missing evidence,
+unknown fields, missing fixtures, or an unresolved disposition.</p>
+<p>The production records include adapter-neutral session lifecycle, audit
+anchoring, snapshot rollback, secret envelopes, provenance verification,
+permission grants, and bounded migration reports. <code>sendbox-host</code> composes those
+records with verified runtime plans and authenticated Apple/Kata guest services.
+All inventory and conformance entries are implemented or explicitly
+not-applicable.</p>
+<p>Deleted implementation paths are represented through
+<code>Tests/qualification/historical/swift-to-rust.v1.json</code>, which binds each
+historical evidence path to the exact pre-cutover commit and Git blob object.
+Validation resolves the commit and every blob from repository history, rejects
+paths still present in the current tree, and requires a full-history checkout.
+The text after the second <code>#</code> is a stable semantic claim label rather than a
+source-code selector. Implemented entries must also resolve to live repository
+evidence directly or through their implemented target source module.</p>
+<p>Inventory coverage scans <code>crates/*/src</code> only; the Swift package and the
+TypeScript copilot bridge no longer exist. Validation therefore rejects the tree
+outright if <code>Package.swift</code>, <code>Package.resolved</code>, <code>Sources/</code>, or
+<code>copilot-bridge/</code> reappears, and still flags any non-Rust source module that
+turns up inside a crate.</p>
+<p>For a PR, changed behavior must update the corresponding inventory and fixture.
+Cutover requires every preserved entry to have a passing implementation test
+and every redesign to have its compatibility note satisfied.</p>
+<h2 id="conformance-gate">Conformance gate</h2>
+<p><code>conformance.v1.json</code> indexes intended-behavior fixtures. Intended behavior is
+the only oracle; the production qualification tool no longer executes or
+compares a legacy implementation.</p>
+<p>Fixtures specify CLI channels and exits, config defaults and errors, policy
+decisions, protocol contracts, runtime capabilities, persisted formats,
+setup/release behavior, and known-defect negative cases. Existing config and
+protocol fixtures remain the executable implementation tests where available;
+qualification fixtures define the cross-implementation contract.</p>
+<p><code>scripts/qualify-setup-release.sh</code> is the executable <code>setup.release</code> gate. The
+macOS and Linux CI matrix runs real setup configuration/build flows, a staged
+Make install, host tar assembly, checksum verification, and archive inspection;
+the macOS leg additionally builds and inspects the unsigned pkg and dmg.</p>
+<p><code>policy.decisions</code> is implemented across the native command broker, egress
+engine, MCP broker, repository-scope authorization, and Git guard. The Git
+evidence covers repository/workspace identity, aliases, options, remote
+rewrites, refspecs, timeouts, output limits, environment/config injection,
+trusted binary paths, and native exit preservation.</p>
+<p><code>mcp.contracts</code> records native framing, JSON-RPC, hierarchical per-server
+policy, exact-command and exact-gateway project validation, authenticated guest
+delivery, modern Streamable HTTP, explicit 2025 session compatibility, TLS/DNS
+destination checks, redirects, credentials, egress bypass protection,
+legacy-trace, versioned observation, redaction, backpressure, cancellation, and
+fail-closed audit contracts. Legacy 2024 HTTP+SSE remains intentionally
+unsupported.</p>
+<h2 id="benchmark-gate">Benchmark gate</h2>
+<p><code>benchmark-spec.v1.json</code> records reference-host fields, workload sizes,
+warmups/repetitions, cache states, compiler/linker/allocator/logging controls,
+statistics and confidence intervals, absolute plan thresholds, C-reference
+interfaces, fixed-adapter definitions, and the BPF no-loss event-rate gate.
+Unknown environmental values are <code>unqualified</code>; they must not be guessed.</p>
+<p>Available pure/control-plane paths measure CLI startup, config validation,
+policy structural validation, protocol encode/decode, and authenticated
+in-memory protocol RTT including MAC work. Exec broker, policy decisions, MCP,
+egress, BPF decode, guest bootstrap, RSS/binary release measurements, and
+vendor runtime paths remain explicit hooks until stable production interfaces
+and reference hosts exist.</p>
+<p>The harness emits raw samples and summaries at benchmark report schema version 2,
+which records host OS, architecture, <code>rustc</code>, and the qualification tool version.
+Shared-runner smoke tests only
+check execution and output shape; they never enforce noisy latency thresholds.
+Qualification enforcement is reserved for declared reference hosts:</p>
+<pre tabindex="0"><code class="language-bash">cargo run --manifest-path tools/sendbox-qualification/Cargo.toml -- validate
+
+cargo run --manifest-path tools/sendbox-qualification/Cargo.toml -- \
+  benchmark --profile smoke --rust-binary target/release/sendbox
+
+cargo run --manifest-path tools/sendbox-qualification/Cargo.toml -- \
+  benchmark --profile qualification --enforce-thresholds \
+  --rust-binary target/release/sendbox</code></pre>
+<p>The portable harness never starts Apple container services, containerd, Kata,
+Hyperlight, guest services, or BPF programs. Production Kata has a separate,
+non-skipping self-hosted gate:</p>
+<pre tabindex="0"><code class="language-bash">SENDBOX_KATA_LIVE=1 \
+SENDBOX_KATA_CONFIG=/absolute/config.yaml \
+SENDBOX_KATA_IMAGE=registry/workload@sha256:&lt;digest&gt; \
+SENDBOX_KATA_BUNDLE=/absolute/bundle \
+SENDBOX_KATA_TRUST_ROOT=/absolute/release-public.key \
+./scripts/qualify-kata-live.sh</code></pre>
+<p><code>.github/workflows/kata-live.yaml</code> requires a runner labeled
+<code>self-hosted, linux, x64, kvm, kata</code>. Missing inputs or prerequisites fail; they
+are never reported as a successful skip. Vendor baselines must still be run on
+prepared hosts using the pinned fixed-adapter definition. A result cannot be
+published while any required workload, reference host field, relative C
+baseline, fixed-adapter baseline, BPF event rate, or live Kata evidence remains
+<code>unqualified</code>.</p>
+<h2 id="apple-runtime-qualification">Apple runtime qualification</h2>
+<p>The production Apple entry is <code>module.rust-apple-runtime</code>. Its portable gate
+uses the shared runtime conformance suite, a stateful fake <code>container</code> CLI,
+exact-argv assertions, bounded stream/output tests, cancellation and failure
+tests, signed-bundle verification, and a real local authenticated Unix-stream
+fixture.</p>
+<p>The vendor gate is opt-in only because GitHub-hosted runners do not provide an
+already registered Apple container service or repository trust artifacts. When
+the repository variable <code>SENDBOX_APPLE_CONTAINER_LIVE=1</code> configures the
+prepared self-hosted runner, <code>.github/workflows/apple-runtime.yaml</code> runs the
+live test without a skip path. The test verifies the pre-existing service,
+creates unique container and guest socket identities, authenticates through the
+official CLI stdio relay, and performs targeted cleanup. It never registers,
+starts, stops, or unregisters the Apple service.</p>
+<p>See <a href="../apple-runtime/">Apple runtime adapter</a> for required variables, the live
+command, transport evidence, and unsupported capabilities.</p>
+<h2 id="hyperlight-runtime-qualification">Hyperlight runtime qualification</h2>
+<p><code>module.hyperlight-runtime</code> and <code>claim.hyperlight</code> are implemented by
+<code>crates/sendbox-runtime-hyperlight</code>. Ordinary qualification validates the
+portable lifecycle subset, exact argv construction, signed bundle verification,
+network rejection rules, fresh read-only staging, cancellation, output, and
+cleanup. It does not claim a persistent guest broker, stdio forwarding, eBPF or
+seccomp guest bootstrap, OCI support, environment injection, DNS budgets,
+connection limits, or wildcard/CIDR enforcement.</p>
+<p>The vendor gate is opt-in because it requires a prepared Linux KVM host, a
+root-owned pinned <code>hyperlight-unikraft</code>, and a signed Unikraft bundle. When
+designated with <code>SENDBOX_HYPERLIGHT_LIVE=1</code>, missing prerequisites fail the
+test rather than producing a success-shaped skip. The complete command and
+required variables are documented in <a href="../hyperlight/">the Hyperlight guide</a>.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/qualification.md"><code>docs/qualification.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/qualification.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../contributing/"><span class="pager-label">Previous</span> Contributing</a>
+<a class="pager-next" href="../roadmap/"><span class="pager-label">Next</span> Roadmap</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="./" aria-current="page">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

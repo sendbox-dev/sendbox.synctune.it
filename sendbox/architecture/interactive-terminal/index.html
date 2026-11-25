@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interactive terminal | SendBox docs</title>
+  <meta name="description" content="Status: production.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Interactive terminal | SendBox docs">
+  <meta property="og:description" content="Status: production.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/interactive-terminal/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/interactive-terminal/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Interactive terminal</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="interactive-terminal-sessions">Interactive Terminal Sessions</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#design-constraint">Design constraint</a></li>
+<li><a href="#negotiation">Negotiation</a></li>
+<li><a href="#terminal-allocation">Terminal allocation</a></li>
+<li><a href="#flow-control">Flow control</a></li>
+<li><a href="#end-of-file">End of file</a></li>
+<li><a href="#host-terminal-handling">Host terminal handling</a></li>
+<li><a href="#qualification">Qualification</a></li>
+<li><a href="#limitations">Limitations</a></li>
+</ol>
+</nav>
+<p>Status: <strong>production</strong>.</p>
+<p><code>sendbox run --interactive</code> runs the workload on a pseudoterminal inside the
+sandbox so that terminal agents — GitHub Copilot CLI, Claude Code, Codex,
+Gemini — can render a full-screen interface and accept keystrokes. Without it
+the workload receives <code>/dev/null</code> on stdin, <code>isatty</code> is false, and every such
+agent either refuses to start or degrades to a non-interactive mode.</p>
+<h2 id="design-constraint">Design constraint</h2>
+<p>Interactive support must not widen the sandbox boundary. The host↔guest control
+channel is already full duplex and already carries workload output as
+authenticated <code>Message::Event</code> frames, so keystrokes travel the same path in the
+opposite direction and inherit its message authentication, sequence and replay
+protection, session binding, direction binding and 256 KiB frame cap. No new
+transport socket, port or privilege is introduced. <code>--separate-stderr</code> adds only
+a launcher-local PTY pair and the child fd 2 mapping described below.</p>
+<figure class="diagram">
+<pre tabindex="0"><code class="language-mermaid">flowchart LR
+    K[Host terminal] --&gt;|raw bytes| C[sendbox CLI]
+    C --&gt;|StandardInput / EOF / Resize| G[Guest protocol loop]
+    G --&gt;|ClientFrame::Input / Resize| B[Execution broker]
+    B --&gt;|pty primary| L[Launcher]
+    L --&gt;|controlling pty: fd 0/1| W[Workload]
+    L -.-&gt;|optional stderr pty: fd 2| W
+    W --&gt;|stdout and optional stderr| L
+    L --&gt;|output and input credits| B
+    B --&gt;|Message::Event| C
+    C --&gt;|stdout / stderr| K</code></pre>
+<figcaption>Diagram source (Mermaid). <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/interactive-terminal.md">View it rendered on GitHub</a>.</figcaption>
+</figure>
+<h2 id="negotiation">Negotiation</h2>
+<p>Interactive runs negotiate behavior by operation name rather than by adding a
+wire <code>Capability</code>. The CBOR codec rejects unknown capability values, so adding a
+capability variant would break mixed-version peers even for headless runs.</p>
+<ul>
+<li><code>agent.launch.interactive</code> is the V1 operation. New guests continue accepting
+it for old hosts, retaining the bounded-drop input behavior from SendBox 2.0.</li>
+<li><code>agent.launch.interactive.v2</code> carries the V2 request with credit-based input
+and the optional <code>separate_stderr</code> field.</li>
+<li>New hosts request V2. An old guest rejects the unknown operation before either
+peer can exchange a V2-only event kind; there is no silent downgrade that
+could reintroduce input loss.</li>
+<li>The initial <code>TerminalInputCredit</code> event is observable proof that the launcher
+accepted V2 and is ready for input.</li>
+</ul>
+<p>Fail-closed admission uses the internal, non-wire
+<code>RuntimeCapability::InteractiveTerminal</code>. Apple and Kata advertise it; Hyperlight
+does not, and <code>sendbox-host</code> additionally rejects an interactive request for
+Hyperlight before anything is created or started.</p>
+<p>The original interactive event discriminants (<code>StandardInput</code>,
+<code>StandardInputEof</code>, <code>TerminalResize</code>) remain unchanged. V2 appends
+<code>TerminalInputCredit</code> as event kind 9 and emits it only for the V2 operation, so
+a V1 host never receives an unknown discriminant.</p>
+<h2 id="terminal-allocation">Terminal allocation</h2>
+<p>The launcher opens the pseudoterminal pair <strong>before</strong> installing its own seccomp
+filter, so a policy that denies <code>ioctl</code> cannot break allocation. Runtime resize
+still needs <code>ioctl</code> after the filter is installed, so an interactive request is
+rejected up front when the command policy denies <code>ioctl</code>, <code>setsid</code>, <code>dup2</code> or
+<code>dup3</code>. The error names the offending syscalls.</p>
+<p>Because the launcher must be single threaded when it calls <code>clone3</code>, every
+terminal pump thread is created after <code>clone3_exec</code> returns.</p>
+<p>The child establishes its controlling terminal in this order: <code>setsid</code>,
+<code>TIOCSCTTY</code>, <code>dup2</code> the controlling secondary onto fds 0 and 1, optionally
+<code>dup2</code> a second non-controlling secondary onto fd 2, <code>fchdir</code>, capability and uid
+drop, seccomp, close the original secondaries, <code>execveat</code>. All raw
+<code>setsid</code>/<code>ioctl</code>/<code>dup2</code> work remains in the audited Linux syscall adapter.</p>
+<p>By default fd 2 also uses the controlling terminal, preserving the merged stream
+and strict terminal ordering. <code>--separate-stderr</code> allocates a second
+pseudoterminal pair:</p>
+<ul>
+<li><code>isatty(2)</code> remains true, including color and TTY-sensitive diagnostics.</li>
+<li>Only the first device is the controlling terminal, so job control is unchanged.</li>
+<li>Every resize is mirrored to both devices.</li>
+<li>The second primary is read as <code>StreamKind::Stderr</code>, which already maps to
+<code>EventKind::StandardError</code>.</li>
+<li>stdout/stderr interleaving is no longer strict because separate kernel buffers
+are drained independently.</li>
+</ul>
+<p>The launcher releases both secondaries immediately after <code>clone3</code>; retaining
+either would prevent the corresponding primary from reaching end of stream.
+Separate stderr consumes one extra PTY pair per session, so deployments running
+many concurrent sessions must account for <code>/proc/sys/kernel/pty/max</code>.</p>
+<h2 id="flow-control">Flow control</h2>
+<p>V2 uses a fixed window of 64 credits. One credit authorizes one non-empty input
+chunk of at most 4 KiB, bounding the launcher's user-space backlog to 256 KiB.
+The launcher emits the initial 64-credit grant only after the terminal writer is
+ready, then returns one credit after a complete queued chunk has drained from the
+backlog. Partial PTY writes retain the chunk and its offset; they never return
+early credit.</p>
+<p>Credit and queue behavior by layer:</p>
+<div class="table-scroll" role="group" aria-label="Flow control table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Layer</th><th scope="col">V2 behavior</th></tr></thead>
+<tbody>
+<tr><td><code>sendbox-cli</code></td><td>Starts with zero credit. Its reader polls only the wake pipe at zero, reads at most one 4 KiB chunk per credit, and uses a depth-65 input/EOF FIFO plus a latest-value resize lane.</td></tr>
+<tr><td><code>sendbox-agent</code></td><td>Validates grants never exceed 64 outstanding credits. A dedicated writer has a depth-4 priority control channel, a depth-65 input/EOF FIFO, and a latest-value resize lane.</td></tr>
+<tr><td>Guest protocol</td><td>Relays credits without blocking its broker reader. Its writer has a depth-4 priority control channel, a depth-64 input channel, a dedicated EOF reservation that drains after preceding input, and a latest-value resize lane.</td></tr>
+<tr><td>Exec service</td><td>The socket reader uses non-blocking offers into a queue with 64 input slots, a dedicated FIFO EOF reservation, and one coalesced resize slot.</td></tr>
+<tr><td>Launcher</td><td>The control monitor uses the same 64-input/EOF/resize queue shape. <code>TerminalWriter</code> preserves at most 64 chunk boundaries and 256 KiB on an <code>O_NONBLOCK</code> primary.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Under valid credit accounting, none of the V2 queues can saturate. Saturation is
+therefore an invariant violation that terminates the session loudly; V2 never
+waits in a shared reader and never discards a chunk. The V1 operation alone keeps
+the old bounded waits and explicit drop diagnostics for bulk input chunks; EOF
+still uses its reservation so a legacy session cannot delay cancellation.</p>
+<p>Guest output and host keystrokes are deliberately selected <em>without</em> bias
+against each other: a chatty workload must not starve typing, and a long paste
+must not starve the screen.</p>
+<p>The host's guest-facing writer and the guest's broker-facing writer each live on
+their own task. Their reader loops continue draining output and credit events
+while input is queued, avoiding the cycle where both peers stop reading while
+blocked writing.</p>
+<p>End of file is the one input message that may not be dropped, at any layer. It
+is one-shot and state-changing on all three sides — the host stops reading
+stdin, the orchestrator closes the terminal, and the guest refuses further input
+— so a silent drop leaves the workload waiting forever for a <code>VEOF</code> byte that
+can no longer be produced. EOF consumes no credit and every input queue reserves
+capacity for it. Where EOF has its own transport lane, the writer drains every
+preceding input frame before sending it. The launcher then appends the configured
+<code>VEOF</code> byte behind its backlog, so EOF cannot overtake input and cannot be refused
+at zero credit.</p>
+<p>Resizes consume no credit. They are <code>ioctl</code>s once they reach the launcher, so
+they can overtake bytes already waiting in the PTY backlog; <code>SIGWINCH</code> is out of
+band anyway. Forwarding queues retain only the latest pending resize, preventing
+resize storms from consuming input or EOF capacity.</p>
+<p>The pty primary is opened <code>O_NONBLOCK</code>, which is what keeps the backlog in user
+space where it can be bounded and where later commands can overtake it.
+<code>n_tty_write</code> on a blocking descriptor does not return short counts: it sleeps
+until every byte fits, so polling for writability first would bound nothing
+(<code>POLLOUT</code> only promises one byte of room). Since <code>O_NONBLOCK</code> is file-status state shared by every
+descriptor for the same open file, and a pty primary cannot be reopened to get
+an independent file description, the output pump is <code>poll</code>-driven too.
+After cleanup, terminal input stops immediately, but terminal readers retain a
+separate shutdown state and keep polling through the bounded drain window. This
+preserves bytes that become readable at process exit without making reader joins
+depend on a delayed PTY hangup.</p>
+<h2 id="end-of-file">End of file</h2>
+<p><code>Ctrl-D</code> typed in raw mode is an ordinary forwarded byte; the workload's own
+line discipline interprets it. An explicit <code>StandardInputEof</code> — host stdin
+closed, for example piped input exhausted — writes the pseudoterminal's
+<em>configured</em> <code>VEOF</code> byte, read through <code>tcgetattr</code> rather than hardcoded to
+<code>0x04</code>, and then refuses further input. It never closes the primary, which would
+send <code>SIGHUP</code> to the session.</p>
+<h2 id="host-terminal-handling">Host terminal handling</h2>
+<p>The CLI requires that stdin and stdout are both terminals and that <code>sendbox</code> is
+in the terminal's foreground process group, then enters raw mode with
+<code>tcsetattr(..., Now, ...)</code>. <code>Now</code> rather than <code>Flush</code>: bytes already typed ahead
+belong to the workload, not to the driver's discard pile.</p>
+<p>Raw mode clears <code>ISIG</code>, so <code>Ctrl-C</code>, <code>Ctrl-Z</code> and <code>Ctrl-\</code> reach the workload's
+terminal as bytes and the sandboxed program — not <code>sendbox</code> — decides what to do
+with them. The host-side Ctrl-C handler is therefore disabled for interactive
+runs. <code>SIGTERM</code>, <code>SIGHUP</code> and <code>SIGQUIT</code> still unwind through the normal
+cancellation path so cleanup runs and the terminal is restored.</p>
+<p>Keystrokes are read by a dedicated thread that waits in <code>poll</code> on both the
+terminal and a wake pipe, so shutting the run down never depends on the operator
+pressing another key, and the reader is joined before the terminal is restored —
+a detached reader could otherwise steal a keystroke from the shell that resumes
+after <code>sendbox</code> exits.</p>
+<p>Restoration is idempotent and runs from both an explicit call and <code>Drop</code>, so a
+panic still leaves a usable terminal. <code>SIGKILL</code> and <code>abort</code> remain inherently
+non-restorable.</p>
+<p><code>TERM</code> is validated to a bounded ASCII character set and sent with the launch
+request. The guest makes it authoritative for the workload, replacing any
+configured <code>TERM</code>, because a stale value would render for the wrong terminal on
+the operator's screen.</p>
+<h2 id="qualification">Qualification</h2>
+<p>Live Linux coverage in <code>crates/sendbox-exec/tests/linux_live.rs</code>:</p>
+<div class="table-scroll" role="group" aria-label="Qualification table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Test</th><th scope="col">Property</th></tr></thead>
+<tbody>
+<tr><td><code>interactive_launch_gives_the_workload_a_controlling_terminal</code></td><td><code>isatty</code> on all three descriptors, foreground process group, initial window size</td></tr>
+<tr><td><code>interactive_launch_merges_stderr_by_default</code></td><td>default mode preserves merged stdout/stderr output</td></tr>
+<tr><td><code>interactive_launch_can_separate_stderr_on_a_resized_tty</code></td><td>opt-in fd 2 remains a TTY, is tagged stderr, and receives mirrored resizes</td></tr>
+<tr><td><code>interactive_launch_forwards_input_and_window_size_changes</code></td><td>keystrokes reach the workload; a mid-run resize is observed</td></tr>
+<tr><td><code>interactive_launch_ends_the_workload_when_host_input_ends</code></td><td><code>StandardInputEof</code> closes the workload's stdin</td></tr>
+<tr><td><code>interactive_launch_survives_simultaneous_input_and_heavy_output</code></td><td>full-duplex traffic does not deadlock or truncate</td></tr>
+<tr><td><code>interactive_launch_preserves_all_output_written_through_exit</code></td><td>every exact byte written through clean process exit survives the post-cleanup drain</td></tr>
+<tr><td><code>flow_controlled_terminal_delivers_a_paste_larger_than_the_launcher_window</code></td><td>a credit-aware paste larger than 256 KiB arrives byte-for-byte</td></tr>
+<tr><td><code>flow_controlled_terminal_cancellation_stays_prompt_when_input_is_blocked</code></td><td>cancellation remains prompt while a raw-mode workload never reads</td></tr>
+<tr><td><code>interactive_launch_is_rejected_when_the_policy_denies_terminal_syscalls</code></td><td>admission names the denied syscall</td></tr>
+</tbody>
+</table>
+</div>
+<p>Orchestration coverage in <code>crates/sendbox-agent/tests/agent.rs</code> asserts that an
+interactive plan requires <code>RuntimeCapability::InteractiveTerminal</code>, that a
+headless plan does not, that the launch carries the terminal size, type, and
+stderr mode, and that credit, EOF, and post-EOF input states fail closed.</p>
+<h3 id="manual-agent-smoke-test">Manual agent smoke test</h3>
+<p>CI runs no real agent because it holds no Copilot or Anthropic credentials.
+Before releasing a change to this path, run both of the following from a real
+terminal and confirm the agent renders, accepts typing, survives a window
+resize, and exits cleanly on its own quit command:</p>
+<pre tabindex="0"><code class="language-bash">export COPILOT_GITHUB_TOKEN=...   # github.forward_copilot_auth: true
+sendbox run --interactive --config .sendbox.yaml --runtime kata \
+  --image &lt;image@sha256:digest&gt; --bundle &lt;bundle&gt; --trust-root &lt;key&gt; \
+  -- /usr/bin/copilot
+
+export ANTHROPIC_API_KEY=...
+sendbox run --interactive --config .sendbox.yaml --runtime kata \
+  --image &lt;image@sha256:digest&gt; --bundle &lt;bundle&gt; --trust-root &lt;key&gt; \
+  -- /usr/bin/claude</code></pre>
+<h2 id="limitations">Limitations</h2>
+<ul>
+<li>Linux guests only; the pseudoterminal path lives in the Linux execution
+broker.</li>
+<li>Hyperlight cannot host an interactive session.</li>
+<li>stdout and stderr remain merged unless <code>--separate-stderr</code> is selected.</li>
+<li>Separate stderr loses strict cross-stream ordering and doubles PTY pair use for
+the session.</li>
+<li><code>--json</code> and <code>--interactive</code> are mutually exclusive.</li>
+<li>A new host requires a guest bundle that understands
+<code>agent.launch.interactive.v2</code>; old guests reject the operation rather than
+silently falling back to lossy V1 input.</li>
+</ul>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/interactive-terminal.md"><code>docs/architecture/interactive-terminal.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/interactive-terminal.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../guest-artifact-bundles/"><span class="pager-label">Previous</span> Guest artifact bundles</a>
+<a class="pager-next" href="../kata-runtime/"><span class="pager-label">Next</span> Kata runtime</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="./" aria-current="page">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

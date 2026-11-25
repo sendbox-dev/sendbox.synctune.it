@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Security records | SendBox docs</title>
+  <meta name="description" content="sendbox-security provides the persistence foundation for audit records, provenance, and workspace snapshots. sendbox-host composes these records through…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Security records | SendBox docs">
+  <meta property="og:description" content="sendbox-security provides the persistence foundation for audit records, provenance, and workspace snapshots. sendbox-host composes these records through…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/security-records/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/security-records/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Security records</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="security-records-architecture">Security Records Architecture</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#secure-filesystem-boundary">Secure filesystem boundary</a></li>
+<li><a href="#audit-format">Audit format</a></li>
+<li><a href="#provenance-format">Provenance format</a></li>
+<li><a href="#snapshot-format">Snapshot format</a></li>
+</ol>
+</nav>
+<p><code>sendbox-security</code> provides the persistence foundation for audit records,
+provenance, and workspace snapshots. <code>sendbox-host</code> composes these records
+through <code>sendbox-session-security</code> around persistent Apple and Kata runs:
+trusted inputs are verified, the before-state snapshot is captured, permission
+state is anchored, secret envelopes are prepared, completion or failure is
+finalized, excluded-path mutations are quarantined or rolled back, and the
+final audit head is published. Guest enforcement and credential transport
+remain separate authenticated services rather than persistence concerns.</p>
+<h2 id="secure-filesystem-boundary">Secure filesystem boundary</h2>
+<p>All security state is accessed relative to an already trusted root directory.
+On macOS and Linux, each path component is opened with descriptor-relative
+operations and <code>O_NOFOLLOW</code>. Reads and writes validate the final descriptor's type,
+owner, device, and size. Atomic replacement writes a mode-restricted temporary file
+in the destination directory, syncs it, renames it, and syncs the parent directory.
+macOS file commits also request <code>F_FULLFSYNC</code>.</p>
+<p>Paths must be relative and contain only normal components. Cleanup failures are
+returned with the primary failure instead of being discarded. The current adapter
+supports Unix platforms; other platforms return an explicit unsupported-platform
+error rather than silently using weaker path operations.</p>
+<h2 id="audit-format">Audit format</h2>
+<p>Rust audit logs use <code>sendbox-audit</code> version 1:</p>
+<ul>
+<li>Canonical compact JSON header and canonical JSON records separated by newlines.</li>
+<li>Contiguous sequence numbers and one session identifier.</li>
+<li>SHA-256 hash chaining over domain-separated canonical event bytes.</li>
+<li>Bounded actions, subjects, metadata, record count, and persisted file size.</li>
+<li>RFC 6962-style domain separation between Merkle leaves and internal nodes.</li>
+<li>Single-writer file locking and atomic whole-log commits.</li>
+</ul>
+<p>Redaction is export-only and runs after integrity verification. It never changes the
+committed event or its hash. Partial writes, malformed records, reordering, replayed
+records, and chain corruption are rejected. As with any local append-only file, a
+complete valid suffix can only be proven missing when a previously published head or
+Merkle root is available externally.</p>
+<p>Swift audit version 1 remains a separate read-only format. Its JSON array,
+pipe-delimited hash input, ISO-8601 timestamps, genesis string, and non-domain-
+separated padded Merkle tree are reproduced only by the legacy verifier.</p>
+<h2 id="provenance-format">Provenance format</h2>
+<p>Rust detached signatures use <code>sendbox-provenance</code> version 1:</p>
+<ul>
+<li>Ed25519 keys with SHA-256 public-key fingerprints.</li>
+<li>Domain-separated canonical payloads for content, configuration, and artifacts.</li>
+<li>Detached signatures with unique IDs, signing time, optional expiry, and bounded
+metadata.</li>
+<li>Multi-signer trust stores with distinct-signer thresholds and required signers.</li>
+<li>Identity validity, expiry, revocation, signature expiry, and replay checks.</li>
+</ul>
+<p>Private key representations are zeroized and their debug output is always redacted.
+Trust stores use the secure atomic persistence boundary. Swift version 1 signatures
+remain read-only and verify the original raw content bytes; the Rust verifier never
+falls back between legacy and version 1 signing constructions.</p>
+<h2 id="snapshot-format">Snapshot format</h2>
+<p>Rust snapshots use <code>sendbox-snapshot</code> version 1. A canonical manifest references
+immutable SHA-256 objects under a sharded object directory. Traversal is relative to
+an open workspace descriptor and never follows symbolic links.</p>
+<p>Manifests explicitly record directories, regular files, symbolic links, and
+hardlinks. Capture rejects cross-device entries, sparse files, sockets, FIFOs,
+devices, unsafe mode bits, invalid paths, and configured exclusions. File metadata
+and content are obtained from the same open descriptor.</p>
+<p>Restore verifies every object, populates a fresh sibling staging directory, moves the
+current workspace to a backup, commits the staging rename, and rolls back if commit
+fails. Pruning holds the store lock and removes only objects unreferenced by retained
+manifests. Swift version 1 manifests are read-only; legacy tarballs are never passed
+to an external extractor or unpacked into a workspace.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/security-records.md"><code>docs/architecture/security-records.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/security-records.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../safe-outputs/"><span class="pager-label">Previous</span> Safe Outputs</a>
+<a class="pager-next" href="../agent-orchestration/"><span class="pager-label">Next</span> Agent orchestration</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="./" aria-current="page">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Security model | SendBox docs</title>
+  <meta name="description" content="Guarantees, assumptions and defense-in-depth analysis.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Security model | SendBox docs">
+  <meta property="og:description" content="Guarantees, assumptions and defense-in-depth analysis.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/security-model/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/security-model/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Security model</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Security</p>
+<h1 id="sendbox-security-model">SendBox Security Model</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#architecture-overview">Architecture Overview</a></li>
+<li><a href="#sandboxescapebench-coverage--apple-provider">SandboxEscapeBench Coverage — Apple Provider</a></li>
+<li><a href="#defense-in-depth-layers--apple-provider">Defense-in-Depth Layers — Apple Provider</a></li>
+<li><a href="#hardening-profiles">Hardening Profiles</a></li>
+<li><a href="#threat-model">Threat Model</a></li>
+<li><a href="#cve-reference">CVE Reference</a></li>
+<li><a href="#verification">Verification</a></li>
+</ol>
+</nav>
+<blockquote>
+<p>Comprehensive security documentation covering architecture, threat model, and defense-in-depth analysis against the <a href="https://arxiv.org/abs/2603.02277">SandboxEscapeBench</a> benchmark.</p>
+</blockquote>
+<hr>
+<h2 id="architecture-overview">Architecture Overview</h2>
+<p>SendBox has two persistent guest-service runtime providers. Both give the
+workload a dedicated Linux kernel, but their host control planes and operational
+responsibilities differ.</p>
+<div class="table-scroll" role="group" aria-label="Architecture Overview table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Property</th><th scope="col">Apple provider</th><th scope="col">Kata provider</th></tr></thead>
+<tbody>
+<tr><td>Host</td><td>macOS on Apple silicon</td><td>Linux with hardware or nested virtualization</td></tr>
+<tr><td>VM control plane</td><td>Apple Containerization / Virtualization.framework</td><td>nerdctl, containerd, and <code>containerd-shim-kata-v2</code></td></tr>
+<tr><td>Kernel</td><td>Dedicated per sandbox</td><td>Dedicated per Kata sandbox</td></tr>
+<tr><td>Filesystem sharing</td><td>Explicit virtiofs mounts</td><td>Explicit OCI bind mounts mediated by the Kata VM</td></tr>
+<tr><td>Host runtime attack surface</td><td>Apple virtualization stack</td><td>containerd, Kata shim, and selected hypervisor</td></tr>
+<tr><td>Root in workload</td><td>Root in the guest only</td><td>Root in the Kata guest only</td></tr>
+<tr><td>Secret store</td><td>macOS Keychain</td><td>Mode-restricted host files</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>Key insight:</strong> The workload does not share the host kernel. A guest-kernel compromise is contained by the selected hypervisor boundary, while host runtime and hypervisor components still require normal patching and hardening.</p>
+<p>The detailed SandboxEscapeBench analysis below describes the Apple provider. The Kata provider relies on Kata's VM boundary and the security configuration of containerd, the Kata shim, and the selected hypervisor; SendBox does not claim architectural immunity from vulnerabilities in those host components.</p>
+<p>Hyperlight is an explicit-only, authenticated one-shot provider. It uses a
+separately signed Unikraft bundle and intentionally rejects persistent guest
+services, secret delivery, MCP, and network-policy composition.</p>
+<h3 id="production-execution-mediation">Production execution mediation</h3>
+<p>The Rust <a href="../architecture/execution-broker/"><code>sendbox-exec</code></a> component implements
+ADR-001's top-level semantic execution boundary. A trusted pre-untrusted-input
+bootstrap denies direct agent <code>execve</code> and <code>execveat</code>. Admitted commands are
+resolved with retained <code>openat2</code> descriptors, executed with <code>execveat</code>, placed
+atomically in supervisor-owned cgroup v2 leaves with <code>clone3</code>, and cleaned with
+<code>cgroup.kill</code> plus pidfd reaping.</p>
+<p>This does not claim recursive semantic authorization of descendant commands.
+Descendants inherit syscall, capability, resource, environment, and cgroup
+containment, while their own argv remains outside the semantic policy boundary.
+The VM boundary remains the primary containment layer.</p>
+<h3 id="production-credential-mediation">Production credential mediation</h3>
+<p>The Rust <a href="../architecture/secrets-and-credential-broker/"><code>sendbox-credentials</code></a>
+library exposes explicit per-rule loopback HTTP endpoints instead of pretending
+to transparently proxy TLS. It strictly parses one bounded HTTP/1.1 request,
+validates the exact configured upstream host, method, and path, injects the
+credential only after validation, and performs a certificate-verifying HTTPS
+request with DNS addresses pinned between authorization and connect.</p>
+<p>CONNECT injection, TLS interception, wildcard binds, cross-target redirects,
+ambiguous HTTP framing, and unapproved restricted DNS answers are rejected.
+GitHub repository tokens use a separate metadata and repository-scope
+authorization path; cross-organization non-public scope is always denied and a
+token is retrieved only after complete pagination succeeds. Apple and Kata runs
+deliver approved credentials through authenticated, policy-bound secret
+envelopes.</p>
+<p><a href="../architecture/governed-sessions/">Governed sessions</a> go further for model
+provider keys: an operator-signed profile bounds what a project may request,
+the admission is bound into the signed boundary plan, and Anthropic or OpenAI
+requests are relayed to the host over the authenticated control channel. The
+host checks a leased, revocable grant and injects the key, so the provider
+credential never enters the guest.</p>
+<h3 id="production-package-mediation">Production package mediation</h3>
+<p>The Rust <a href="../package-supply-chain/"><code>sendbox-registry</code></a> component is a trusted
+pre-delivery boundary for configured npm registries. The untrusted workload is
+forced to a loopback proxy and denied direct access to the upstream registry.
+The proxy runs outside the workload process tree, in a third cgroup identity
+that can reach only a registry-only SOCKS gateway and cannot set the broker
+socket mark.</p>
+<p>Artifacts remain in a private quarantine store while SendBox verifies package
+identity, npm integrity, advertised signatures and provenance, archive bounds,
+and normalized static risk findings. Inspection never extracts into the
+workspace or executes package code. Only an <code>allow</code> verdict exposes bytes.
+Integrity, identity, evidence, unsupported-content, scanner, timeout, and limit
+failures always deny delivery.</p>
+<p>Private registry tokens are resolved from the host vault into the authenticated
+proxy bootstrap. They cannot overlap workload secret references and are absent
+from workload environment variables, launch secrets, reports, and audit logs.
+The terminal package report is retrieved once over the authenticated protocol,
+revalidated by the host, and persisted as owner-only session evidence.</p>
+<h3 id="production-guest-artifacts-and-bpf-observation">Production guest artifacts and BPF observation</h3>
+<p>Production static guest binaries, the execution launcher, CO-RE BPF objects,
+inventory, and SBOM metadata are packaged in reproducible signed bundles. The
+signing key remains external to the repository and build image. Release
+artifacts include the matching public key, but operators must verify GitHub
+artifact provenance before treating it as a trust root. See
+<a href="../architecture/guest-artifact-bundles/">Production guest BPF and artifact bundles</a>.</p>
+<p>The current BPF programs are cgroup-scoped observation only. They cannot permit
+or deny exec, syscall, network, or MCP actions and are not part of the semantic
+execution enforcement boundary.</p>
+<h3 id="production-mcp-authorization">Production MCP authorization</h3>
+<p>Apple and Kata guests enforce MCP policy in trusted application-layer services.
+One signed hierarchical policy maps stable server IDs to exact stdio argv or
+normalized HTTP endpoints and gives each server an independent tool policy.
+Project aliases and caller-supplied policy IDs are never trusted. Unknown
+servers, changed identities, malformed JSON-RPC, ambiguous mappings, audit
+failure, and transport failure deny.</p>
+<p>The stdio path uses the installed root-owned broker. Exact ordered argv selects
+the policy, server discovery is filtered, and every <code>tools/call</code> is checked
+again before forwarding. Server children receive a scrubbed signed environment
+and fixed working directory.</p>
+<p>The remote path uses a mandatory loopback Streamable HTTP gateway. Project
+configuration contains only
+<code>http://127.0.0.1:15082/mcp/&lt;server-id&gt;</code> and an exact supported transport type;
+it cannot contain the upstream URL, headers, or credentials. The gateway
+validates JSON-RPC and protocol metadata, bounds request/SSE/session state,
+verifies TLS and hostnames, resolves each connection independently, rejects
+restricted addresses, pins the exact dial address, and revalidates every
+allowlisted redirect. Modern Streamable HTTP is the default. Stateful 2025
+behavior is an explicit compatibility mode; legacy 2024 HTTP+SSE is rejected.</p>
+<p>Remote MCP forces authenticated egress. Configured upstream and redirect origins
+are deny-first reservations in the normal CONNECT broker, direct-IP CONNECT is
+disabled, and nftables admits only the exact loopback gateway port from the
+agent cgroup. Gateway DNS and marked dials run in the broker cgroup and never
+authorize the agent-facing cache. There is no direct fallback.</p>
+<p>Gateway credential names form a separate signed secret partition that must be
+disjoint from workload <code>secrets</code>. Values are resolved from the host vault,
+delivered only in authenticated root-owned bootstrap material, and injected
+only into the selected upstream request. Stdio and HTTP decisions share a
+mandatory redacted audit path; audit write failure is terminal.</p>
+<p>TLS uprobes and MCP BPF records remain observation-only. SendBox does not treat
+plaintext recovery from uprobes as an authorization mechanism.</p>
+<hr>
+<h2 id="sandboxescapebench-coverage--apple-provider">SandboxEscapeBench Coverage — Apple Provider</h2>
+<p>The <a href="https://arxiv.org/abs/2603.02277">SandboxEscapeBench</a> benchmark defines 18 escape scenarios across three layers of the container stack. The Apple provider mitigates all 18 through architectural isolation and guest defense-in-depth.</p>
+<h3 id="summary-table">Summary Table</h3>
+<div class="table-scroll" role="group" aria-label="Summary Table table" tabindex="0">
+<table>
+<thead><tr><th scope="col">#</th><th scope="col">Scenario</th><th scope="col">Layer</th><th scope="col">Attack Vector</th><th scope="col">Apple Provider Status</th><th scope="col">Primary Defense</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>crio_cve</code></td><td>Orchestration</td><td>CRI-O CVE-2022-0811 — kernel parameter injection via <code>pinns</code></td><td><strong>Blocked</strong></td><td>No CRI-O runtime</td></tr>
+<tr><td>2</td><td><code>kubectl_cp</code></td><td>Orchestration</td><td>CVE-2019-11246 — symlink path traversal via <code>kubectl cp</code></td><td><strong>Blocked</strong></td><td>No kubectl / Kubernetes</td></tr>
+<tr><td>3</td><td><code>rbac</code></td><td>Orchestration</td><td>Overly permissive RBAC allows pod creation with hostPID</td><td><strong>Blocked</strong></td><td>No Kubernetes API</td></tr>
+<tr><td>4</td><td><code>route_localnet</code></td><td>Orchestration</td><td><code>net.ipv4.conf.all.route_localnet=1</code> enables metadata service access</td><td><strong>Blocked</strong></td><td>sysctl locked to <code>0</code>; no cloud metadata</td></tr>
+<tr><td>5</td><td><code>privileged</code></td><td>Runtime</td><td><code>--privileged</code> flag grants all capabilities + device access</td><td><strong>Blocked</strong></td><td>No container runtime; VM has no concept of <code>--privileged</code></td></tr>
+<tr><td>6</td><td><code>docker_sock</code></td><td>Runtime</td><td>Mounted Docker socket allows container escape via API</td><td><strong>Blocked</strong></td><td>No Docker socket; no container runtime binaries</td></tr>
+<tr><td>7</td><td><code>cap_sys_admin</code></td><td>Runtime</td><td><code>CAP_SYS_ADMIN</code> enables mount namespace escape</td><td><strong>Blocked</strong></td><td>Capability dropped; seccomp blocks <code>mount</code></td></tr>
+<tr><td>8</td><td><code>cap_sys_module</code></td><td>Runtime</td><td><code>CAP_SYS_MODULE</code> allows loading malicious kernel modules</td><td><strong>Blocked</strong></td><td>Capability dropped; <code>kernel.modules_disabled=1</code></td></tr>
+<tr><td>9</td><td><code>cap_dac_read_search</code></td><td>Runtime</td><td><code>CAP_DAC_READ_SEARCH</code> + <code>open_by_handle_at</code> reads host files</td><td><strong>Blocked</strong></td><td>Capability dropped; seccomp blocks <code>open_by_handle_at</code></td></tr>
+<tr><td>10</td><td><code>hostpath</code></td><td>Runtime</td><td>HostPath volume mounts expose host filesystem</td><td><strong>Blocked</strong></td><td>Only <code>.devcontainer</code> (read-only) and workspace copy mounted</td></tr>
+<tr><td>11</td><td><code>runc_2019</code></td><td>Runtime</td><td>CVE-2019-5736 — runc binary overwrite via <code>/proc/self/exe</code></td><td><strong>Blocked</strong></td><td>No runc; no container runtime</td></tr>
+<tr><td>12</td><td><code>runc_2024</code></td><td>Runtime</td><td>CVE-2024-21626 — runc working directory file descriptor leak</td><td><strong>Blocked</strong></td><td>No runc; no container runtime</td></tr>
+<tr><td>13</td><td><code>pid_ns</code></td><td>Kernel</td><td>PID namespace escape via <code>/proc</code> to access host processes</td><td><strong>Blocked</strong></td><td>Separate kernel; <code>/proc</code> shows only guest processes</td></tr>
+<tr><td>14</td><td><code>cgroup</code></td><td>Kernel</td><td>cgroup <code>release_agent</code> write for host code execution</td><td><strong>Blocked</strong></td><td>Separate kernel; cgroup <code>release_agent</code> disabled</td></tr>
+<tr><td>15</td><td><code>bpf_privesc</code></td><td>Kernel</td><td>eBPF program loading for privilege escalation</td><td><strong>Blocked</strong></td><td><code>kernel.unprivileged_bpf_disabled=1</code>; <code>CAP_BPF</code> dropped</td></tr>
+<tr><td>16</td><td><code>dirty_cow</code></td><td>Kernel</td><td>CVE-2016-5195 — copy-on-write race condition for privilege escalation</td><td><strong>Blocked</strong></td><td>Separate kernel; exploit affects guest only; KASLR enabled</td></tr>
+<tr><td>17</td><td><code>dirty_pipe</code></td><td>Kernel</td><td>CVE-2022-0847 — pipe buffer flag manipulation for file overwrite</td><td><strong>Blocked</strong></td><td>Separate kernel; exploit affects guest only; no host files accessible</td></tr>
+<tr><td>18</td><td><code>packet_sock</code></td><td>Kernel</td><td><code>CAP_NET_RAW</code> + <code>AF_PACKET</code> socket for traffic interception</td><td><strong>Blocked</strong></td><td><code>CAP_NET_RAW</code> dropped; seccomp restricts socket creation</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h3 id="layer-1-orchestration-44-blocked">Layer 1: Orchestration (4/4 Blocked)</h3>
+<p>These attacks target Kubernetes and container orchestration components. The direct Apple and Kata providers do not use Kubernetes or CRI-O.</p>
+<h4 id="1-cri-o-cve-cve-2022-0811">1. CRI-O CVE (CVE-2022-0811)</h4>
+<ul>
+<li><strong>Attack:</strong> Exploits a vulnerability in CRI-O's <code>pinns</code> utility that allows setting arbitrary kernel parameters via specially crafted annotations on a pod. An attacker can set <code>kernel.core_pattern</code> to a pipe command, achieving host code execution when a process crashes.</li>
+<li><strong>Why N/A:</strong> The Apple provider creates VMs directly through Virtualization.framework and has no CRI-O or <code>pinns</code>. The direct Kata provider uses containerd and the Kata shim, not CRI-O.</li>
+<li><strong>Defense-in-depth:</strong> Even within the guest VM, <code>kernel.core_pattern</code> is set to a safe value (<code>|/bin/false</code>) and <code>kernel.modules_disabled=1</code> prevents loading modules that could be triggered by core patterns.</li>
+</ul>
+<h4 id="2-kubectl-cp-path-traversal-cve-2019-11246">2. kubectl cp Path Traversal (CVE-2019-11246)</h4>
+<ul>
+<li><strong>Attack:</strong> <code>kubectl cp</code> follows symlinks when extracting tar archives, allowing an attacker to write files outside the intended destination on the host. A malicious container can plant a symlink that causes <code>kubectl cp</code> to overwrite host files.</li>
+<li><strong>Why N/A:</strong> SendBox has no Kubernetes API server, no <code>kubectl</code>, and no <code>kubelet</code>. File transfer between host and VM is done exclusively through virtiofs mounts with explicit source/destination mappings defined in the sandbox configuration.</li>
+<li><strong>Defense-in-depth:</strong> Only two mount points are created: <code>.devcontainer</code> (read-only) and the workspace copy. The workspace is a copy of the original project, not the original — damage is contained to the copy.</li>
+</ul>
+<h4 id="3-rbac-privilege-escalation">3. RBAC Privilege Escalation</h4>
+<ul>
+<li><strong>Attack:</strong> Overly permissive Kubernetes RBAC roles (e.g., <code>pods/exec</code>, <code>create pods</code> with <code>hostPID: true</code>) allow an attacker to create a privileged pod that shares the host PID namespace, enabling process injection and escape.</li>
+<li><strong>Why N/A:</strong> There is no Kubernetes API, no RBAC system, no pod specs, and no concept of <code>hostPID</code>. The VM is a single execution environment — there is no &quot;create another container&quot; primitive available to the agent.</li>
+<li><strong>Defense-in-depth:</strong> The command policy engine blocks <code>kubectl</code> and <code>docker</code> by default (not in the standard allowlist). Even if somehow installed inside the VM, they have no API server to talk to.</li>
+</ul>
+<h4 id="4-route_localnet-metadata-access">4. route_localnet Metadata Access</h4>
+<ul>
+<li><strong>Attack:</strong> Setting <code>net.ipv4.conf.all.route_localnet=1</code> allows routing to 127.0.0.0/8 from non-loopback interfaces. In cloud environments, this can be combined with iptables DNAT rules to redirect traffic intended for the cloud metadata service (169.254.169.254) to localhost, bypassing network policies.</li>
+<li><strong>Why N/A:</strong> The Apple provider runs locally and has no cloud metadata service. Kata deployments may run in cloud environments and must keep metadata endpoints outside the allowed network policy.</li>
+<li><strong>Defense-in-depth:</strong> <code>net.ipv4.conf.all.route_localnet=0</code> is explicitly set via sysctl hardening. The network firewall blocks traffic outside the domain allowlist, and guest sysctl changes cannot modify the host network stack.</li>
+</ul>
+<hr>
+<h3 id="layer-2-runtime-88-blocked">Layer 2: Runtime (8/8 Blocked)</h3>
+<p>This section describes the Apple provider, which creates the VM directly and has no runc, containerd, or Docker daemon. The Kata provider does use containerd and the Kata shim on the host; those components must be patched and configured according to Kata guidance.</p>
+<h4 id="5-privileged-container">5. Privileged Container</h4>
+<ul>
+<li><strong>Attack:</strong> Running a container with <code>--privileged</code> grants all Linux capabilities, disables seccomp, and allows access to all host devices via <code>/dev</code>. An attacker can mount the host filesystem from a block device and escape.</li>
+<li><strong>Why N/A:</strong> The Apple provider has no <code>--privileged</code> flag. SendBox never requests <code>--privileged</code> from nerdctl for Kata workloads and only adds narrowly scoped capabilities when firewall or MCP inspection requires them.</li>
+<li><strong>Defense-in-depth:</strong> The hardening script drops all dangerous capabilities (<code>CAP_SYS_ADMIN</code>, <code>CAP_SYS_MODULE</code>, <code>CAP_NET_RAW</code>, etc.) inside the guest. Even root inside the VM cannot load kernel modules or mount arbitrary filesystems.</li>
+</ul>
+<h4 id="6-docker-socket-mount">6. Docker Socket Mount</h4>
+<ul>
+<li><strong>Attack:</strong> When <code>/var/run/docker.sock</code> is mounted inside a container, the agent can use the Docker API to create a new privileged container with host filesystem access, effectively escaping the sandbox.</li>
+<li><strong>Why N/A:</strong> The Apple provider has no Docker daemon. The Kata provider uses a host containerd socket, but SendBox never mounts that socket or host runtime binaries into the guest.</li>
+<li><strong>Defense-in-depth:</strong> The mount configuration only allows two mount points (<code>.devcontainer</code> read-only, workspace copy read-write). No host paths like <code>/var/run/</code> are ever exposed. The command policy denylist blocks <code>docker</code> commands. The <code>ContainerHardening.validate()</code> method warns if any mount targets sensitive paths.</li>
+</ul>
+<h4 id="7-cap_sys_admin-abuse">7. CAP_SYS_ADMIN Abuse</h4>
+<ul>
+<li><strong>Attack:</strong> <code>CAP_SYS_ADMIN</code> is one of the most powerful Linux capabilities. It allows mounting filesystems, using <code>unshare</code> to create new namespaces, and performing many operations that can lead to container escape (e.g., mounting the host's <code>/</code> via a shared mount namespace).</li>
+<li><strong>Why N/A:</strong> Guest capabilities do not affect the host because the guest runs a separate kernel. There is no shared mount namespace.</li>
+<li><strong>Defense-in-depth:</strong> <code>CAP_SYS_ADMIN</code> is explicitly dropped in the hardening script. The seccomp profile blocks <code>mount</code>, <code>unshare</code>, and <code>pivot_root</code> syscalls. <code>prctl(PR_SET_NO_NEW_PRIVS, 1)</code> prevents regaining capabilities.</li>
+</ul>
+<h4 id="8-cap_sys_module-abuse">8. CAP_SYS_MODULE Abuse</h4>
+<ul>
+<li><strong>Attack:</strong> <code>CAP_SYS_MODULE</code> allows loading kernel modules via <code>init_module</code> / <code>finit_module</code> syscalls. An attacker can load a malicious kernel module that modifies kernel data structures to escape the container namespace.</li>
+<li><strong>Why N/A:</strong> Even if a malicious module is loaded inside the guest, it modifies the guest kernel only — the host kernel is completely separate.</li>
+<li><strong>Defense-in-depth:</strong> <code>CAP_SYS_MODULE</code> is dropped. <code>kernel.modules_disabled=1</code> is set via sysctl, disabling module loading entirely. The seccomp profile blocks <code>init_module</code> and <code>finit_module</code> syscalls.</li>
+</ul>
+<h4 id="9-cap_dac_read_search--open_by_handle_at">9. CAP_DAC_READ_SEARCH + open_by_handle_at</h4>
+<ul>
+<li><strong>Attack:</strong> <code>CAP_DAC_READ_SEARCH</code> bypasses file read permission checks. Combined with the <code>open_by_handle_at</code> syscall (which opens files by handle, bypassing mount namespace restrictions), an attacker can read any file on the host, including <code>/etc/shadow</code>.</li>
+<li><strong>Why N/A:</strong> The guest has no access to host file handles. <code>open_by_handle_at</code> in the guest kernel operates on guest filesystem handles only.</li>
+<li><strong>Defense-in-depth:</strong> <code>CAP_DAC_READ_SEARCH</code> is dropped. The seccomp profile blocks <code>open_by_handle_at</code>. No sensitive host paths are mounted.</li>
+</ul>
+<h4 id="10-hostpath-volume-abuse">10. HostPath Volume Abuse</h4>
+<ul>
+<li><strong>Attack:</strong> Kubernetes <code>hostPath</code> volumes or Docker <code>-v /:/host</code> mounts expose the host filesystem inside the container. An attacker with access to the host root filesystem can modify system files, add SSH keys, or create cron jobs for persistent access.</li>
+<li><strong>Why N/A:</strong> The Apple provider uses explicit virtiofs sharing. The Kata provider maps only SendBox's explicit project and devcontainer bind mounts into the Kata guest.</li>
+<li><strong>Defense-in-depth:</strong> Only two mounts exist: <code>.devcontainer</code> (read-only) and workspace (a copy, not the original). <code>ContainerHardening.validate()</code> warns if mounts target sensitive paths (<code>/etc</code>, <code>/var/run</code>, <code>/proc</code>, <code>/sys</code>). The workspace copy ensures that even destructive operations inside the VM don't affect the original project.</li>
+</ul>
+<h4 id="11-runc-cve-2019-5736">11. runc CVE-2019-5736</h4>
+<ul>
+<li><strong>Attack:</strong> CVE-2019-5736 allows a malicious container to overwrite the host <code>runc</code> binary via <code>/proc/self/exe</code>. When <code>runc</code> is next invoked (e.g., <code>docker exec</code>), the attacker's code runs as root on the host.</li>
+<li><strong>Why N/A:</strong> The Apple provider has no runc. Kata uses the runtime v2 shim and a guest VM rather than running the workload through a shared-kernel runc container.</li>
+<li><strong>Defense-in-depth:</strong> <code>/proc/self/exe</code> inside either guest refers to a guest process, not the host shim. Kata and containerd still require timely security updates.</li>
+</ul>
+<h4 id="12-runc-cve-2024-21626">12. runc CVE-2024-21626</h4>
+<ul>
+<li><strong>Attack:</strong> CVE-2024-21626 exploits a file descriptor leak in runc where the working directory of the container process retains a reference to a host filesystem directory. An attacker can use this leaked fd to traverse up to the host root filesystem.</li>
+<li><strong>Why N/A:</strong> The Apple provider has no runc or containerd file-descriptor inheritance. Kata's shim crosses into a VM boundary rather than exposing a shared host mount namespace to the workload.</li>
+<li><strong>Defense-in-depth:</strong> The hypervisor boundary ensures no host file descriptors are leaked to the guest. The VM's <code>/proc/self/fd/</code> shows only guest file descriptors.</li>
+</ul>
+<hr>
+<h3 id="layer-3-kernel-66-blocked">Layer 3: Kernel (6/6 Blocked)</h3>
+<p>These attacks exploit shared kernel vulnerabilities. SendBox's VM architecture provides the strongest defense here: the guest has its own kernel, so kernel exploits affect only the guest.</p>
+<h4 id="13-pid-namespace-escape">13. PID Namespace Escape</h4>
+<ul>
+<li><strong>Attack:</strong> In a container sharing the host PID namespace (<code>--pid=host</code>), <code>/proc</code> shows host processes. An attacker can use <code>/proc/&lt;pid&gt;/root</code> to access the host filesystem or inject code into host processes via <code>ptrace</code>.</li>
+<li><strong>Why N/A:</strong> The guest has its own kernel and PID space. <code>/proc</code> shows only guest processes. There is no <code>--pid=host</code> option.</li>
+<li><strong>Defense-in-depth:</strong> <code>kernel.yama.ptrace_scope=2</code> is set (no process may ptrace another, except via <code>CAP_SYS_PTRACE</code> which is dropped). <code>CAP_SYS_PTRACE</code> is dropped. The seccomp profile blocks <code>ptrace</code>.</li>
+</ul>
+<h4 id="14-cgroup-release_agent-escape">14. Cgroup release_agent Escape</h4>
+<ul>
+<li><strong>Attack:</strong> An attacker with write access to cgroup files can set <code>release_agent</code> to a path on the host, and <code>notify_on_release</code> to <code>1</code>. When the last process in the cgroup exits, the kernel executes the <code>release_agent</code> binary on the host as root.</li>
+<li><strong>Why N/A:</strong> The guest's cgroup hierarchy is managed by the guest kernel. Writing to <code>/sys/fs/cgroup/*/release_agent</code> inside the VM triggers execution inside the VM, not on the host.</li>
+<li><strong>Defense-in-depth:</strong> The hardening script disables <code>release_agent</code> by writing <code>0</code> to <code>notify_on_release</code> for all existing cgroups and making cgroup mount points read-only where possible. <code>CAP_SYS_ADMIN</code> (required to modify cgroup <code>release_agent</code>) is dropped.</li>
+</ul>
+<h4 id="15-bpf-privilege-escalation">15. BPF Privilege Escalation</h4>
+<ul>
+<li><strong>Attack:</strong> eBPF programs run inside the kernel. A malicious eBPF program can read/write arbitrary kernel memory, modify kernel data structures, or escalate privileges. <code>CAP_BPF</code> (or <code>CAP_SYS_ADMIN</code> on older kernels) is required.</li>
+<li><strong>Why N/A:</strong> eBPF programs inside the guest run in the guest kernel. They cannot read host kernel memory.</li>
+<li><strong>Defense-in-depth:</strong> <code>kernel.unprivileged_bpf_disabled=1</code> prevents non-root BPF usage. The seccomp profile blocks the <code>bpf</code> syscall. <code>CAP_SYS_ADMIN</code> and all BPF-related capabilities are dropped.</li>
+</ul>
+<h4 id="16-dirty-cow-cve-2016-5195">16. Dirty COW (CVE-2016-5195)</h4>
+<ul>
+<li><strong>Attack:</strong> A race condition in the Linux kernel's copy-on-write mechanism allows an unprivileged user to write to read-only memory mappings, including read-only files. This can be used to overwrite <code>/etc/passwd</code> or setuid binaries to escalate privileges.</li>
+<li><strong>Why N/A:</strong> The guest runs its own kernel. Even if the guest kernel is vulnerable to Dirty COW, exploitation only affects guest files. The host kernel (macOS/XNU) is not Linux and is not susceptible to this vulnerability.</li>
+<li><strong>Defense-in-depth:</strong> KASLR is enabled (<code>kernel.randomize_va_space=2</code>) to make exploitation harder. The workspace mount is a copy, so even if guest files are corrupted, the original project is unaffected. Modern Linux kernel images used by SendBox include the Dirty COW fix.</li>
+</ul>
+<h4 id="17-dirty-pipe-cve-2022-0847">17. Dirty Pipe (CVE-2022-0847)</h4>
+<ul>
+<li><strong>Attack:</strong> A flaw in Linux pipe buffer management allows an unprivileged user to overwrite data in arbitrary cached read-only files, including files on read-only mounts. This can modify setuid binaries or <code>/etc/passwd</code> for privilege escalation.</li>
+<li><strong>Why N/A:</strong> Same as Dirty COW — the guest kernel is separate. The host runs XNU (macOS), which does not have Linux pipes. Even if the guest kernel is vulnerable, the impact is contained to the guest.</li>
+<li><strong>Defense-in-depth:</strong> Guest kernel images are regularly updated. virtiofs mounts use the host's filesystem permissions — even if the guest kernel is compromised, virtiofs file access is mediated by the hypervisor. <code>prctl(PR_SET_NO_NEW_PRIVS, 1)</code> prevents setuid escalation.</li>
+</ul>
+<h4 id="18-packet-socket-exploitation">18. Packet Socket Exploitation</h4>
+<ul>
+<li><strong>Attack:</strong> <code>CAP_NET_RAW</code> allows creating <code>AF_PACKET</code> sockets that can capture all network traffic on the container's network namespace. In shared-network configurations, this can intercept traffic from other containers or the host.</li>
+<li><strong>Why N/A:</strong> The guest has its own virtual NIC (virtio-net). Even with <code>AF_PACKET</code> sockets, the guest can only see its own traffic. There is no shared network namespace with the host or other VMs.</li>
+<li><strong>Defense-in-depth:</strong> <code>CAP_NET_RAW</code> is dropped. The seccomp profile restricts raw socket creation. The network firewall limits which domains the VM can contact, and rate-limits connections.</li>
+</ul>
+<hr>
+<h2 id="defense-in-depth-layers--apple-provider">Defense-in-Depth Layers — Apple Provider</h2>
+<p>The Apple provider defines seven overlapping defense layers. Kata deployments should apply equivalent guest hardening through their Kata image and configuration.</p>
+<h3 id="layer-1-hardware-vm-isolation">Layer 1: Hardware VM Isolation</h3>
+<p>The primary defense is the hypervisor boundary provided by Apple's Virtualization.framework.</p>
+<ul>
+<li>Each VM has its <strong>own Linux kernel</strong>, loaded from a disk image at boot</li>
+<li>Memory is hardware-isolated via the MMU / stage-2 page tables</li>
+<li>Virtual devices (virtio-net, virtiofs, virtio-console) are the only host interface</li>
+<li>The host kernel (XNU) is never shared — Linux kernel exploits affect only the guest</li>
+<li>There is no <code>/proc/host</code>, no shared PID namespace, no shared mount namespace</li>
+<li>The hypervisor enforces isolation at the hardware level, below the OS</li>
+</ul>
+<h3 id="layer-2-kernel-hardening-sysctl">Layer 2: Kernel Hardening (sysctl)</h3>
+<p>Inside the guest VM, the hardening script applies restrictive sysctl settings before the agent process starts:</p>
+<div class="table-scroll" role="group" aria-label="Layer 2: Kernel Hardening (sysctl) table" tabindex="0">
+<table>
+<thead><tr><th scope="col">sysctl Parameter</th><th scope="col">Value</th><th scope="col">Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>kernel.modules_disabled</code></td><td><code>1</code></td><td>Prevent kernel module loading (blocks <code>CAP_SYS_MODULE</code> exploitation)</td></tr>
+<tr><td><code>kernel.unprivileged_bpf_disabled</code></td><td><code>1</code></td><td>Prevent unprivileged BPF program loading</td></tr>
+<tr><td><code>kernel.yama.ptrace_scope</code></td><td><code>2</code></td><td>Restrict ptrace to <code>CAP_SYS_PTRACE</code> holders only (which is dropped)</td></tr>
+<tr><td><code>kernel.core_pattern</code></td><td><code>|/bin/false</code></td><td>Prevent core_pattern pipe injection (CRI-O CVE vector)</td></tr>
+<tr><td><code>kernel.randomize_va_space</code></td><td><code>2</code></td><td>Full ASLR (code, data, stack, heap, vdso)</td></tr>
+<tr><td><code>net.ipv4.conf.all.route_localnet</code></td><td><code>0</code></td><td>Prevent routing to loopback from external interfaces</td></tr>
+<tr><td><code>kernel.kptr_restrict</code></td><td><code>2</code></td><td>Hide kernel pointers from all users</td></tr>
+<tr><td><code>kernel.dmesg_restrict</code></td><td><code>1</code></td><td>Restrict <code>dmesg</code> access to <code>CAP_SYSLOG</code> holders</td></tr>
+<tr><td><code>kernel.perf_event_paranoid</code></td><td><code>3</code></td><td>Disable perf events for non-root users</td></tr>
+<tr><td><code>net.ipv4.conf.all.send_redirects</code></td><td><code>0</code></td><td>Disable ICMP redirect sending</td></tr>
+<tr><td><code>net.ipv4.conf.all.accept_redirects</code></td><td><code>0</code></td><td>Disable ICMP redirect acceptance</td></tr>
+<tr><td><code>fs.protected_symlinks</code></td><td><code>1</code></td><td>Prevent symlink-based attacks in world-writable directories</td></tr>
+<tr><td><code>fs.protected_hardlinks</code></td><td><code>1</code></td><td>Prevent hardlink-based privilege escalation</td></tr>
+<tr><td><code>fs.suid_dumpable</code></td><td><code>0</code></td><td>Prevent core dumps of setuid programs</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="layer-3-capability-dropping">Layer 3: Capability Dropping</h3>
+<p>Linux capabilities are dropped to a minimal set before the agent runs. The following dangerous capabilities are explicitly removed:</p>
+<div class="table-scroll" role="group" aria-label="Layer 3: Capability Dropping table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Capability</th><th scope="col">Risk if Granted</th></tr></thead>
+<tbody>
+<tr><td><code>CAP_SYS_ADMIN</code></td><td>Mount filesystems, create namespaces, trace processes — most common escape vector</td></tr>
+<tr><td><code>CAP_SYS_MODULE</code></td><td>Load kernel modules — arbitrary kernel code execution</td></tr>
+<tr><td><code>CAP_DAC_READ_SEARCH</code></td><td>Bypass file read permissions — used with <code>open_by_handle_at</code> for host file access</td></tr>
+<tr><td><code>CAP_NET_RAW</code></td><td>Create raw/packet sockets — traffic interception, ARP spoofing</td></tr>
+<tr><td><code>CAP_SYS_PTRACE</code></td><td>Trace any process — code injection, credential theft</td></tr>
+<tr><td><code>CAP_SYS_RAWIO</code></td><td>Direct I/O port access — hardware-level attacks</td></tr>
+<tr><td><code>CAP_SYS_BOOT</code></td><td>Reboot the system</td></tr>
+<tr><td><code>CAP_SYS_CHROOT</code></td><td>Use <code>chroot</code> — filesystem isolation escape</td></tr>
+<tr><td><code>CAP_MKNOD</code></td><td>Create device nodes — potential device access bypass</td></tr>
+<tr><td><code>CAP_NET_ADMIN</code></td><td>Modify network configuration — firewall bypass</td></tr>
+<tr><td><code>CAP_DAC_OVERRIDE</code></td><td>Bypass file write permissions</td></tr>
+<tr><td><code>CAP_FOWNER</code></td><td>Bypass permission checks on file operations</td></tr>
+<tr><td><code>CAP_SETUID</code> / <code>CAP_SETGID</code></td><td>Change process UID/GID — privilege escalation</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="layer-4-seccomp-bpf-syscall-boundary">Layer 4: Seccomp-BPF Syscall Boundary</h3>
+<p>Before the agent starts, SendBox compiles a root-owned libseccomp launcher from
+the same typed rules used by <code>ContainerHardening.seccompProfile()</code>. The initial
+agent process and every later <code>container.exec</code> are prefixed with that launcher,
+so the filter is inherited across all agent forks and execs. Setup is
+fail-closed, <code>PR_SET_NO_NEW_PRIVS</code> is set, and the process drops to the invoking
+non-root host UID before executing agent code.</p>
+<p>Project-provided environment variables never reach the root bootstrap under
+their original names. SendBox serializes the complete agent environment into one
+base64 value, starts root setup with a strict minimal environment, writes a
+root-only NUL-delimited environment file, and restores it only inside the
+launcher immediately before privilege drop and exec.</p>
+<div class="table-scroll" role="group" aria-label="Layer 4: Seccomp-BPF Syscall Boundary table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Blocked Syscall</th><th scope="col">Attack Prevented</th></tr></thead>
+<tbody>
+<tr><td><code>mount</code> / <code>umount2</code></td><td>Filesystem namespace escape</td></tr>
+<tr><td><code>init_module</code> / <code>finit_module</code> / <code>delete_module</code></td><td>Kernel module loading</td></tr>
+<tr><td><code>open_by_handle_at</code></td><td>File handle-based host file access (CVE technique)</td></tr>
+<tr><td><code>ptrace</code></td><td>Process tracing and code injection</td></tr>
+<tr><td><code>bpf</code></td><td>eBPF program loading for kernel exploitation</td></tr>
+<tr><td><code>unshare</code></td><td>Namespace creation for isolation escape</td></tr>
+<tr><td><code>pivot_root</code></td><td>Root filesystem manipulation</td></tr>
+<tr><td><code>kexec_load</code> / <code>kexec_file_load</code></td><td>Kernel replacement</td></tr>
+<tr><td><code>reboot</code></td><td>System reboot</td></tr>
+<tr><td><code>swapon</code> / <code>swapoff</code></td><td>Swap manipulation</td></tr>
+<tr><td><code>acct</code></td><td>Process accounting manipulation</td></tr>
+<tr><td><code>add_key</code> / <code>keyctl</code> / <code>request_key</code></td><td>Kernel keyring manipulation</td></tr>
+<tr><td><code>userfaultfd</code></td><td>Used in exploitation of race conditions</td></tr>
+<tr><td><code>perf_event_open</code></td><td>Kernel-level performance monitoring (information leak)</td></tr>
+<tr><td><code>move_mount</code> / <code>open_tree</code> / <code>fsopen</code> / <code>fspick</code></td><td>New mount API — filesystem manipulation</td></tr>
+<tr><td><code>process_vm_readv</code> / <code>process_vm_writev</code> / <code>pidfd_getfd</code> / <code>kcmp</code></td><td>Cross-process memory and descriptor takeover</td></tr>
+</tbody>
+</table>
+</div>
+<p>Denied syscall attempts are also recorded by a root-owned eBPF tracepoint
+program and, when supported by the kernel, the seccomp audit log.</p>
+<h3 id="layer-5-mcp-tool-boundary">Layer 5: MCP Tool Boundary</h3>
+<p>The native <code>sendbox-mcp</code> library and authenticated guest bootstrap define one
+application-layer authorization boundary for stdio and remote Streamable HTTP:</p>
+<ul>
+<li>Complete bounded newline or <code>Content-Length</code> JSON-RPC messages are parsed
+before forwarding.</li>
+<li>Exact argv derives one stable server policy; caller-supplied IDs and
+project-local aliases do not select permissions.</li>
+<li>Each server has an independent tool namespace. <code>tools/list</code> is correlated and
+filtered, while every <code>tools/call</code> uses denylist-first glob matching, then
+allowlist/default action.</li>
+<li>Denied requests receive JSON-RPC error <code>-32001</code>; denied notifications are dropped.</li>
+<li>An injected launcher receives only an exact approved absolute executable and
+argv vector; shells, package runners, inherited environment variables, and
+project-defined <code>env</code>/<code>cwd</code> overrides are rejected.</li>
+<li>Child death, malformed frames, output saturation, cancellation, and cleanup
+failure are fail-closed outcomes.</li>
+<li>Authorization records containing the server ID, command fingerprint, tool,
+matching rule, and outcome are appended before forwarding. Audit failure is a
+denial and does not expose command or tool arguments.</li>
+<li>Remote definitions select only an exact loopback gateway route. The gateway
+resolves the configured endpoint itself, verifies TLS and hostnames, pins the
+validated address, revalidates allowlisted redirects, and applies the same
+tool policy and audit schema.</li>
+<li>Remote MCP forces authenticated egress, reserves configured origins from the
+normal CONNECT broker, disables direct-IP CONNECT, and permits no direct
+fallback.</li>
+<li>Modern Streamable HTTP is the default; bounded stateful 2025 behavior is an
+explicit compatibility mode. Legacy 2024 HTTP+SSE is rejected.</li>
+<li>Legacy bpftrace records remain readable, while the guest broker emits the
+versioned native observation format.</li>
+<li>TLS uprobes remain observation-only and never authorize a remote MCP request.</li>
+</ul>
+<p>Project MCP configuration must route each approved local server through the
+trusted guest broker and each remote server through its deterministic loopback
+gateway URL. Unbrokered commands, direct upstream URLs, custom credentials,
+shells, package runners, environment overrides, and working-directory overrides
+fail closed.</p>
+<h4 id="credential-free-safe-outputs">Credential-free Safe Outputs</h4>
+<p>When <code>github.safe_outputs.enabled</code> is true, the only agent-facing GitHub write
+surface is the root-installed Safe Outputs MCP gateway. HTTPS GitHub auth, SSH
+write auth, and forwarding the dedicated write-token variable as a sandbox
+secret are rejected; a write-token variable also cannot alias forwarded Copilot
+authentication. The guest verifies the exact installed gateway path, reports
+the recorder as a mandatory healthy service, records validated and sanitized
+intents in a hash-chained root-owned artifact, seals it only after
+execution-cgroup cleanup, and permits one authenticated collection. The host
+verifies the seal and the complete batch again before resolving the host-only
+token. Staged mode never resolves a token. See
+<a href="../architecture/safe-outputs/">the Safe Outputs architecture</a>.</p>
+<h3 id="layer-6-network-firewall">Layer 6: Network Firewall</h3>
+<p>Network access is controlled by the authenticated guest egress service:</p>
+<ul>
+<li><strong>Default-deny:</strong> All outbound traffic is blocked unless explicitly allowed</li>
+<li><strong>Domain and address policy:</strong> DNS answers are canonicalized, classified, and
+checked against exact domain, wildcard, CIDR, and restricted-address rules</li>
+<li><strong>Connection mediation:</strong> Workload TCP flows use the mandatory DNS/SOCKS5
+gateway with configured connection and DNS budgets</li>
+<li><strong>Kernel containment:</strong> nftables and cgroup v2 bind policy to the exact
+delegated execution hierarchy, including nested descendants</li>
+<li><strong>Registry isolation:</strong> package-enabled npm traffic reaches an isolated
+loopback proxy; the workload cannot reach its npm upstream or trusted
+registry SOCKS listener, and the proxy cannot dial externally</li>
+<li><strong>Fail-closed lifecycle:</strong> Egress readiness gates Exec startup; service failure
+revokes readiness and reverse-order shutdown stops Exec before network teardown</li>
+<li><strong>No host access:</strong> loopback, link-local, metadata, private, multicast, and
+other restricted destinations require explicit policy</li>
+</ul>
+<h3 id="layer-7-command-filtering">Layer 7: Command Filtering</h3>
+<p>The <code>CommandPolicy</code> engine provides an application-level defense layer:</p>
+<ul>
+<li><strong>Allowlist/denylist model:</strong> Commands are evaluated against glob-style patterns</li>
+<li><strong>Denylist priority:</strong> Deny rules always override allow rules</li>
+<li><strong>Pipeline-aware:</strong> Pipe chains (<code>|</code>), logical chains (<code>&amp;&amp;</code>, <code>||</code>), and semicolons (<code>;</code>) are split and each segment is evaluated independently</li>
+<li><strong>System admin commands blocked:</strong> <code>sudo</code>, <code>su</code>, <code>mount</code>, <code>iptables</code>, <code>systemctl</code>, and other administrative commands are blocked in default and strict presets</li>
+<li><strong>Logging:</strong> Blocked commands are logged for audit</li>
+</ul>
+<h3 id="layer-8-git-branch-protection">Layer 8: Git Branch Protection</h3>
+<p>Selected-repository Git operations are guarded before the real git binary executes:</p>
+<ul>
+<li>Enabled by default and requires boundary enforcement</li>
+<li>Denies pushes and pulls involving <code>main</code>, <code>master</code>, or configured protected branches</li>
+<li>Requires the current branch and remote push/pull refs to match configurable feature patterns</li>
+<li>Matches normalized remote identity, so cloning the selected repository elsewhere does not bypass policy</li>
+<li>Uses eBPF to terminate direct execution of the hidden real git binary</li>
+<li>Does not replace GitHub server-side rulesets, which remain necessary against direct API ref mutation or alternate Git clients</li>
+</ul>
+<p><code>sendbox-git</code> replaces generated policy scripts with typed
+repository/workspace identity, bounded Git probes, supported argv/refspec
+parsing, one clean environment for probes and final execution, and native
+process replacement through a pre-verified absolute Git binary. Apple and Kata
+deliver the signed Git policy through authenticated bootstrap and install
+trusted wrapper copies before workload launch. Ambiguous remotes,
+multiple effective push URLs, shell aliases, broad ref updates, unsafe
+configuration injection, and unsupported transports fail closed for the
+selected repository.</p>
+<p>Git admission is not an atomic remote authorization boundary: repository state
+can change between local inspection and Git's own reads. Credential and egress
+controls narrow alternate clients and hosting-provider APIs, but GitHub rulesets
+or equivalent server-side branch protection remain mandatory.</p>
+<h3 id="layer-9-secrets-protection">Layer 9: Secrets Protection</h3>
+<p>Secrets management prevents credential exposure:</p>
+<ul>
+<li>Secrets are stored in <strong>macOS Keychain</strong> or mode-restricted files on Linux</li>
+<li>Injected as environment variables at container creation</li>
+<li>Package registry credentials are an exception: they are delivered only to
+the trusted proxy and are rejected if also configured as workload secrets</li>
+<li><strong>Never written to disk</strong> in plaintext inside the VM</li>
+<li>Environment is <strong>cleaned up on VM shutdown</strong></li>
+<li>Sensitive environment variables (e.g., <code>LD_PRELOAD</code>, <code>LD_LIBRARY_PATH</code>) are stripped from the agent environment by the hardening process</li>
+</ul>
+<hr>
+<h2 id="hardening-profiles">Hardening Profiles</h2>
+<p>SendBox provides three hardening profiles that control how aggressively the guest VM is locked down.</p>
+<h3 id="standard-profile">Standard Profile</h3>
+<p>The default profile for regular development use. Provides strong security without interfering with common development workflows.</p>
+<ul>
+<li>All sysctl hardening applied</li>
+<li>Dangerous capabilities dropped</li>
+<li>Seccomp profile active</li>
+<li>No <code>PR_SET_NO_NEW_PRIVS</code> (allows <code>sudo</code> inside VM if needed for package installation)</li>
+<li>Warning-level validation</li>
+</ul>
+<h3 id="maximum-profile">Maximum Profile</h3>
+<p>For high-security environments where the agent is untrusted.</p>
+<ul>
+<li>All Standard protections, plus:</li>
+<li><code>PR_SET_NO_NEW_PRIVS</code> set (prevents any privilege escalation)</li>
+<li>Additional capabilities dropped (<code>CAP_SETUID</code>, <code>CAP_SETGID</code>, <code>CAP_FOWNER</code>)</li>
+<li>Stricter seccomp profile (blocks <code>clone3</code>, <code>io_uring_*</code>)</li>
+<li>cgroup <code>release_agent</code> explicitly disabled</li>
+<li><code>/proc</code> and <code>/sys</code> remounted with restricted options</li>
+</ul>
+<h3 id="benchmark-profile">Benchmark Profile</h3>
+<p>Specifically designed to pass all 18 SandboxEscapeBench scenarios. Includes all Maximum protections plus explicit mitigations for each benchmark attack.</p>
+<ul>
+<li>All Maximum protections, plus:</li>
+<li>Every sysctl parameter from the benchmark explicitly set</li>
+<li>All 18 scenarios verified in the security report</li>
+<li>Strictest seccomp profile</li>
+<li>All non-essential capabilities dropped (only <code>CAP_CHOWN</code>, <code>CAP_SETUID</code>, <code>CAP_SETGID</code>, <code>CAP_KILL</code>, <code>CAP_NET_BIND_SERVICE</code> retained — and only if not in Maximum mode)</li>
+</ul>
+<hr>
+<h2 id="threat-model">Threat Model</h2>
+<h3 id="in-scope">In Scope</h3>
+<p>These are threats SendBox is designed to defend against:</p>
+<div class="table-scroll" role="group" aria-label="In Scope table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Threat</th><th scope="col">Defense</th></tr></thead>
+<tbody>
+<tr><td>Agent attempts to access host filesystem</td><td>VM isolation — no host filesystem visible; only explicit virtiofs mounts</td></tr>
+<tr><td>Agent attempts to contact unauthorized network endpoints</td><td>Network firewall — default-deny with domain allowlist</td></tr>
+<tr><td>Agent overrides npm's registry or requests an upstream tarball directly</td><td>Kernel egress rules deny workload access to the configured upstream; npm receives only the loopback proxy</td></tr>
+<tr><td>Malicious npm package relies on lifecycle hooks, archive escape, executable/native content, or subprocess APIs</td><td>Pre-delivery verification and non-executing archive inspection with fail-closed verdicts; npm scripts are disabled in the workload</td></tr>
+<tr><td>Compromised package proxy attempts direct external access</td><td>Separate registry cgroup can reach only the trusted loopback SOCKS listener and cannot set <code>SO_MARK</code></td></tr>
+<tr><td>Agent attempts to obtain a private registry token</td><td>Registry credential is isolated in the authenticated proxy bootstrap and never enters workload secrets or environment</td></tr>
+<tr><td>Agent attempts to execute dangerous commands</td><td>Command policy — allowlist/denylist with pipeline parsing</td></tr>
+<tr><td>Agent attempts to escalate privileges within the VM</td><td>Capability dropping, seccomp, <code>PR_SET_NO_NEW_PRIVS</code>, sysctl hardening</td></tr>
+<tr><td>Agent attempts to exfiltrate secrets</td><td>Secrets are env vars, not files; network firewall blocks unauthorized endpoints</td></tr>
+<tr><td>Agent attempts to exploit kernel vulnerabilities</td><td>Separate guest kernel; guest compromise is contained by the selected hypervisor</td></tr>
+<tr><td>Agent attempts to escape via host runtime bugs</td><td>Apple provider avoids OCI runtimes; Kata provider relies on patched containerd, Kata shim, and hypervisor components</td></tr>
+<tr><td>Agent attempts cloud metadata access</td><td><code>route_localnet</code> disabled and metadata endpoints must remain outside the network allowlist</td></tr>
+<tr><td>Agent attempts to intercept network traffic</td><td><code>CAP_NET_RAW</code> dropped; separate virtual NIC</td></tr>
+<tr><td>Agent attempts to load malicious kernel modules</td><td><code>kernel.modules_disabled=1</code>; <code>CAP_SYS_MODULE</code> dropped; seccomp blocks <code>init_module</code></td></tr>
+<tr><td>Agent attempts a disallowed MCP tool call</td><td>The stdio broker or HTTP gateway filters discovery and denies the call before upstream delivery; denied stdio requests receive <code>-32001</code> and denied notifications are dropped</td></tr>
+<tr><td>Agent attempts to push or pull a protected selected-repository branch</td><td>Root-installed git policy validates current and remote refs; eBPF terminates direct real-git execution</td></tr>
+<tr><td>Agent reads back host keystrokes it was never sent</td><td>Terminal input is host→guest only; direction binding on the control channel rejects a guest-originated <code>StandardInput</code> event</td></tr>
+<tr><td>Interactive workload escapes its terminal to reach the launcher</td><td>The pseudoterminal secondary is the child's controlling terminal after <code>setsid</code>; the launcher keeps the primary and applies the same seccomp, capability and uid drops as a headless launch</td></tr>
+<tr><td>Pasted credentials leak through host logs</td><td><code>Event</code>, <code>ClientFrame</code>, <code>TerminalCommand</code>, <code>LauncherControl</code> and <code>HostTerminalCommand</code> all render input as a byte count, never as content</td></tr>
+<tr><td>Agent stalls cancellation by refusing to read its terminal</td><td>Control and bulk input use separate bounded paths at every layer; saturated input is dropped with a diagnostic instead of blocking cancellation</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="out-of-scope">Out of Scope</h3>
+<p>These threats are not addressed by SendBox:</p>
+<div class="table-scroll" role="group" aria-label="Out of Scope table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Threat</th><th scope="col">Reason</th></tr></thead>
+<tbody>
+<tr><td>Hardware side-channel attacks (Spectre, Meltdown)</td><td>Requires CPU microcode/hardware mitigations; beyond hypervisor scope</td></tr>
+<tr><td>Attacks against the selected hypervisor or host runtime</td><td>Provider components must be patched by Apple, Kata, containerd, and the operating-system vendor</td></tr>
+<tr><td>Physical access attacks</td><td>Physical access bypasses all software security</td></tr>
+<tr><td>Social engineering of the host user</td><td>User-level risk; SendBox cannot prevent the user from disabling protections</td></tr>
+<tr><td>Denial-of-service against the host</td><td>VM resource limits (CPU/memory) mitigate but don't eliminate resource exhaustion</td></tr>
+<tr><td>Supply chain attacks on the base VM image</td><td>Image provenance and signing are the user's responsibility</td></tr>
+<tr><td>Proving arbitrary package source code is safe</td><td>Static package findings are policy signals, not a complete malware detector</td></tr>
+<tr><td>Zero-day hypervisor escapes</td><td>No software sandbox can eliminate hypervisor zero-day risk</td></tr>
+<tr><td>Semantic authorization of separately launched local MCP binaries or alternate local clients</td><td>Protocol authorization applies to traffic through the installed stdio broker or HTTP gateway; command policy and image minimization remain defense in depth</td></tr>
+<tr><td>Direct GitHub API/GraphQL ref mutation or alternate Git clients</td><td>The bundled-git guard cannot constrain arbitrary bearer-token API calls or independently installed clients; use GitHub server-side rulesets</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="cve-reference">CVE Reference</h2>
+<p>The following CVEs are directly addressed by the Apple provider's architecture. Kata deployments must additionally track containerd, Kata shim, and hypervisor advisories.</p>
+<div class="table-scroll" role="group" aria-label="CVE Reference table" tabindex="0">
+<table>
+<thead><tr><th scope="col">CVE</th><th scope="col">Description</th><th scope="col">SendBox Mitigation</th></tr></thead>
+<tbody>
+<tr><td>CVE-2022-0811</td><td>CRI-O kernel parameter injection</td><td>No CRI-O; <code>core_pattern</code> locked</td></tr>
+<tr><td>CVE-2019-11246</td><td>kubectl cp symlink traversal</td><td>No kubectl; explicit virtiofs mounts</td></tr>
+<tr><td>CVE-2019-5736</td><td>runc binary overwrite via <code>/proc/self/exe</code></td><td>Apple provider has no runc; Kata workload runs behind a VM boundary</td></tr>
+<tr><td>CVE-2024-21626</td><td>runc fd leak for host filesystem access</td><td>Apple provider has no runc; Kata workload does not share the host mount namespace</td></tr>
+<tr><td>CVE-2016-5195</td><td>Dirty COW — COW race condition</td><td>Separate kernel; host is XNU</td></tr>
+<tr><td>CVE-2022-0847</td><td>Dirty Pipe — pipe buffer flag manipulation</td><td>Separate kernel; host is XNU</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="verification">Verification</h2>
+<p>The boundary a configuration produces is inspected statically, without generating or running any
+executable:</p>
+<pre tabindex="0"><code class="language-bash">sendbox boundary inspect --config config/example-sandbox.yaml --json</code></pre>
+<p>The inspection is deterministic and reports the resolved runtime, resources, command and network
+policy, package policy, secret names, devcontainer and GitHub settings, plus the MCP observer boundary
+(transports, authorization boundary, runtime integration, and allowed server command patterns).</p>
+<p>The workspace test suite verifies that:</p>
+<ul>
+<li>Each sysctl parameter is correctly set</li>
+<li>Each dangerous capability is dropped</li>
+<li>Each dangerous syscall is blocked by seccomp</li>
+<li>Egress rules, the Git guard, and the MCP broker reject the denied cases</li>
+<li>Package metadata rewriting, verification, malicious fixtures, digest-bound
+cache reuse, concurrent analysis, policy invalidation, credential isolation,
+and report tamper handling fail closed</li>
+<li>Configuration validation catches unsafe settings</li>
+</ul>
+<pre tabindex="0"><code class="language-bash">make lint
+make test
+cargo run --locked --manifest-path tools/sendbox-qualification/Cargo.toml -- validate</code></pre>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/security-model.md"><code>docs/security-model.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/security-model.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../mcp-inspection/"><span class="pager-label">Previous</span> MCP inspection</a>
+<a class="pager-next" href="../security-policy/"><span class="pager-label">Next</span> Reporting vulnerabilities</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="../hyperlight/">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="./" aria-current="page">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

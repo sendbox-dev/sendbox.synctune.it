@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hyperlight | SendBox docs</title>
+  <meta name="description" content="The explicit one-shot Linux/KVM provider and what it rejects.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Hyperlight | SendBox docs">
+  <meta property="og:description" content="The explicit one-shot Linux/KVM provider and what it rejects.">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/hyperlight/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/hyperlight/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../fleet/">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox docs</a></li>
+<li><span aria-current="page">Hyperlight</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Runtimes and operations</p>
+<h1 id="hyperlight-runtime-adapter">Hyperlight runtime adapter</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#trust-and-preflight">Trust and preflight</a></li>
+<li><a href="#lifecycle-and-execution">Lifecycle and execution</a></li>
+<li><a href="#control-and-mcp-compatibility">Control and MCP compatibility</a></li>
+<li><a href="#network-policy">Network policy</a></li>
+<li><a href="#opt-in-live-qualification">Opt-in live qualification</a></li>
+</ol>
+</nav>
+<p><code>crates/sendbox-runtime-hyperlight</code> is the production Rust
+<code>RuntimeProvider</code> for the official <code>hyperlight-unikraft</code> host CLI. It is
+Linux/KVM-only and deliberately models Hyperlight as a one-shot runtime.
+<code>sendbox run --runtime hyperlight</code> dispatches through
+<code>execute_authenticated_once</code>; it never pretends to provide the persistent guest
+session used by Apple and Kata.</p>
+<h2 id="trust-and-preflight">Trust and preflight</h2>
+<p>The adapter fails preflight unless all of the following hold:</p>
+<ul>
+<li><code>/dev/kvm</code> opens read/write;</li>
+<li>the configured CLI is an absolute, single-link regular executable;</li>
+<li>the executable and every path component are root-owned and not group- or
+world-writable, with no symlinks;</li>
+<li><code>--version</code> exactly matches the configured pinned CLI version;</li>
+<li>the public trust key is an absolute root-owned, non-writable regular file;</li>
+<li>runtime state ancestors are non-symlink directories owned by root or the
+runtime user and are not group/world-writable; state, container, and
+invocation directories are retained through anchored directory handles;</li>
+<li>the signed bundle, detached signatures, release metadata, inventory,
+architecture, versions, rollback floor, artifact owners, modes, and SHA-256
+digests verify;</li>
+<li>the configured kernel is a signed <code>unikraft_shell_kernel</code> artifact and the
+configured CPIO is a signed <code>initrd</code> artifact.</li>
+</ul>
+<p><code>CreateRequest.image</code> is the absolute signed bundle directory. OCI references
+are rejected. Verified kernel and initrd descriptors are copied into a fresh
+private invocation directory, so execution does not reopen an unverified
+artifact pathname.</p>
+<p>The provider configuration is immutable across containers. <code>CreateRequest</code>
+must therefore request one vCPU, the configured memory and working directory,
+and no hostname, per-container mounts, environment, DNS servers, or labels.
+Unsupported intent is rejected during <code>create</code> rather than silently ignored.</p>
+<h2 id="lifecycle-and-execution">Lifecycle and execution</h2>
+<p><code>create</code> creates a logical handle. <code>start</code> either marks that handle running or
+starts the configured initial command in a fresh micro-VM. Every direct
+<code>BootstrapControl</code> exec starts another fresh micro-VM and returns its captured
+stdout, stderr, exit status, timeout, or cancellation result. <code>Workload</code> exec is
+rejected because the common contract requires workload execution to pass
+through a persistent guest broker.</p>
+<p>The exact host argv is:</p>
+<pre tabindex="0"><code class="language-text">hyperlight-unikraft KERNEL
+  [--initrd INITRD]
+  --memory NMi --stack NMi --quiet
+  [--mount HOST:GUEST]...
+  [--net | --net-allow HOST_OR_IP... | --net-block HOST_OR_IP...]
+  [--port PORT]...
+  --exec &quot;cd 'GUEST_DIRECTORY' &amp;&amp; exec 'PROGRAM' 'ARG'...&quot;</code></pre>
+<p>Arguments are passed directly to <code>execve</code>, never through a host shell. The
+guest shell expression uses single-quote escaping. The host environment is
+cleared and rebuilt as only <code>LANG=C</code> and <code>PATH=/usr/bin:/bin</code>.</p>
+<p>Host stdin is always null. Initial-command stdout/stderr can be consumed once
+through <code>attach</code>; direct exec returns bounded captured output. The adapter does
+not advertise streamed I/O or signals. <code>StopRequest.grace</code> must equal the
+launch-time <code>ProcessOptions.termination_grace</code>; a different value is rejected
+rather than silently applying the wrong shutdown deadline.</p>
+<p>Read-only mounts are copied into a new private staging directory for every
+invocation. Symlinks, hard-linked files, special files, duplicate guest paths,
+reserved guest paths, <code>:</code> mount ambiguity, and sources containing the runtime
+staging root are rejected. Writable mounts are rejected because the CLI cannot
+consume a securely anchored directory descriptor. All staging is removed on
+normal exit, failure, timeout, cancellation, stop, cleanup, and dropped exec
+futures; failed removals remain retryable through runtime cleanup.</p>
+<h2 id="control-and-mcp-compatibility">Control and MCP compatibility</h2>
+<p><code>hyperlight-unikraft</code> does not provide the persistent supervisor transport
+required by <code>sendbox-agent</code>. The adapter therefore advertises neither
+<code>BrokeredExec</code> nor transport provisioning, and <code>provision_control_channel</code>
+returns a structured transport-unavailable error. Agent planning fails before
+container creation rather than receiving a fake in-process channel.</p>
+<p>For a purpose-built one-shot guest, <code>execute_authenticated_once</code> copies
+authenticated bootstrap material into an ephemeral mount at:</p>
+<pre tabindex="0"><code class="language-text">/run/sendbox-control/bootstrap-material</code></pre>
+<p>The guest command must consume and erase that material. This is an explicit
+single-launch bootstrap protocol, not a persistent MCP or supervisor channel.
+Ports exist only for the lifetime of that one host process. Stdio MCP,
+persistent network MCP sessions, and the full agent boundary are unsupported.</p>
+<h2 id="network-policy">Network policy</h2>
+<p>The adapter uses <code>HyperlightNetworkConfiguration</code>, not the full
+<code>sendbox_policy::NetworkPolicy</code>, because the latter always carries DNS and
+connection-budget semantics that the vendor CLI cannot enforce. Hyperlight can
+enforce only its CLI disabled, allow-all, exact allow-list, or exact block-list
+modes:</p>
+<ul>
+<li>hostnames are normalized and must be concrete;</li>
+<li>exact IPv4 <code>/32</code> and IPv6 <code>/128</code> entries are accepted and canonicalized;</li>
+<li>wildcard names, non-host CIDRs, destination port/protocol rules, custom DNS
+TTL/query budgets, and connection limits fail closed;</li>
+<li>blocked exact entries take precedence over identical allowed entries;</li>
+<li>hostname allows combined with blocked IPs, and IP allows combined with
+blocked hostnames, fail closed because the CLI cannot preserve that
+resolution-time precedence;</li>
+<li>networking with <code>allow_dns: false</code> fails closed because Hyperlight cannot
+guarantee resolver traffic is disabled;</li>
+<li>a listen port requires an explicit enabled network policy.</li>
+</ul>
+<p>Hyperlight does not run the SendBox eBPF MCP inspector, guest eBPF bootstrap,
+seccomp launcher, DNS broker, connection semaphore, or OCI environment
+injection. The runtime must not be selected for a plan requiring those
+features.</p>
+<h2 id="opt-in-live-qualification">Opt-in live qualification</h2>
+<p>The live test does nothing unless explicitly designated. Once
+<code>SENDBOX_HYPERLIGHT_LIVE</code> is set, every missing variable, KVM failure,
+signature failure, CLI mismatch, or guest failure is a test failure:</p>
+<pre tabindex="0"><code class="language-bash">sudo env \
+  SENDBOX_HYPERLIGHT_LIVE=1 \
+  SENDBOX_HYPERLIGHT_EXECUTABLE=/usr/local/bin/hyperlight-unikraft \
+  SENDBOX_HYPERLIGHT_CLI_VERSION=0.12.0 \
+  SENDBOX_HYPERLIGHT_BUNDLE=/opt/sendbox/hyperlight-bundle \
+  SENDBOX_HYPERLIGHT_PUBLIC_KEY=/etc/sendbox/release-public.key \
+  SENDBOX_HYPERLIGHT_KERNEL=/opt/sendbox/hyperlight-bundle/kernel \
+  SENDBOX_HYPERLIGHT_INITRD=/opt/sendbox/hyperlight-bundle/rootfs.cpio \
+  SENDBOX_HYPERLIGHT_TRUST_ROOT_ID=production-v1 \
+  SENDBOX_HYPERLIGHT_GUEST_VERSION=0.1.0 \
+  SENDBOX_HYPERLIGHT_MIN_RELEASE=1 \
+  SENDBOX_HYPERLIGHT_STATE=/var/lib/sendbox-live \
+  cargo test -p sendbox-runtime-hyperlight --test live \
+    -- --exact live_hyperlight_launch_when_designated --nocapture</code></pre>
+<p>Create <code>SENDBOX_HYPERLIGHT_STATE</code> before running the command, for example:</p>
+<pre tabindex="0"><code class="language-bash">sudo install -d -m 0700 /var/lib/sendbox-live</code></pre>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/hyperlight.md"><code>docs/hyperlight.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/hyperlight.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../kata-containers/"><span class="pager-label">Previous</span> Kata Containers</a>
+<a class="pager-next" href="../dns-cold-start/"><span class="pager-label">Next</span> Cold-start DNS diagnostics</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="../installation/">Installation</a></li>
+<li><a href="../configuration/">Configuration</a></li>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../cli-agents/">CLI agents</a></li>
+<li><a href="../integrations/">Integrations</a></li>
+<li><a href="../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../apple-runtime/">Apple runtime</a></li>
+<li><a href="../kata-containers/">Kata Containers</a></li>
+<li><a href="./" aria-current="page">Hyperlight</a></li>
+<li><a href="../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../security-model/">Security model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../secrets-migration/">Secrets migration</a></li>
+<li><a href="../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../qualification/">Qualification</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../architecture/runtime-core/">Runtime core</a></li>
+<li><a href="../architecture/execution-broker/">Execution broker</a></li>
+<li><a href="../architecture/guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../architecture/guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../architecture/interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../architecture/kata-runtime/">Kata runtime</a></li>
+<li><a href="../architecture/authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="../architecture/session-security-lifecycle/">Session security lifecycle</a></li>
+<li><a href="../architecture/egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../architecture/mcp-broker/">MCP broker</a></li>
+<li><a href="../architecture/package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../architecture/secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../architecture/governed-sessions/">Governed sessions</a></li>
+<li><a href="../architecture/git-branch-guard/">Git branch guard</a></li>
+<li><a href="../architecture/safe-outputs/">Safe Outputs</a></li>
+<li><a href="../architecture/security-records/">Security records</a></li>
+<li><a href="../architecture/agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../architecture/native-project-analysis/">Native project analysis</a></li>
+<li><a href="../architecture/rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

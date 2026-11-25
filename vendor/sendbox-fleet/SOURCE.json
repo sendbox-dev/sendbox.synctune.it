@@ -1,0 +1,19 @@
+{
+  "repository": "sendbox-dev/sendbox-fleet",
+  "ref": "main",
+  "commit": "962a6cf18913e41995dfde12c872be9497d2b1e9",
+  "committed": "2026-11-23T17:13:28Z",
+  "files": {
+    "README.md": "2a40db9ab47217759a684d89f71b81b003d074b5188e746dc3774c1570791630",
+    "docs/deployment.md": "ab1f012730a547901bd8fe5348130009d029290b8d00bf864e92a082c76cfa6a",
+    "docs/architecture.md": "e4472079ed904f22150e62774a25f579eda3996b3d12e488ab7679c97dda93eb",
+    "docs/contract.md": "16890f6431bc7178f9b60ffc7ad851785bd68362f073fa4415d797f61ea3ec5b",
+    "docs/threat-model.md": "d9075fdc252b97f999663891b2b2f7484cdf99cbb8e768f6cf0226b940a19875",
+    "SECURITY.md": "f673f0437ef1c9a953c458fa5c02a8b3b9b265baf2d6e013cee49eb7df0f7343",
+    "CONTRIBUTING.md": "a33204f8d4956bde8e1f6fde077f360ca88502ce54b83867c308646e9b4974f8",
+    "docs/development.md": "d522a735ac781244a6c39ec91db8bd918ecb4bd97a5d54a1e0a4ad26253a69a1",
+    "docs/roadmap.md": "4bb516d5f534e14113cd4a31ede8139787afea8b2a6158fa226dd776850825d0",
+    "docs/assets/logo.svg": "4db0b676fce9ae5a39ee23d3bf39059951796948642d1707b7cd404b854673c5",
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  }
+}

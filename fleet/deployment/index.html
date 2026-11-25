@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deployment | SendBox Fleet docs</title>
+  <meta name="description" content="TLS, database roles, identity providers, audit anchoring, metrics and backups.">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Deployment | SendBox Fleet docs">
+  <meta property="og:description" content="TLS, database roles, identity providers, audit anchoring, metrics and backups.">
+  <meta property="og:url" content="https://sendbox.synctune.it/fleet/deployment/">
+  <link rel="canonical" href="https://sendbox.synctune.it/fleet/deployment/">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../"><img src="../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../sendbox/">SendBox docs</a></li>
+        <li><a href="../" class="is-active">Fleet docs</a></li>
+        <li><a href="../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../">Home</a></li>
+<li><a href="../">SendBox Fleet docs</a></li>
+<li><span aria-current="page">Deployment</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox Fleet docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox Fleet · Get started</p>
+<h1 id="deployment">Deployment</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#checklist">Checklist</a></li>
+<li><a href="#tls-and-the-reverse-proxy">TLS and the reverse proxy</a></li>
+<li><a href="#postgresql-roles-and-migrations">PostgreSQL roles and migrations</a></li>
+<li><a href="#identity-providers">Identity providers</a></li>
+<li><a href="#audit-anchoring">Audit anchoring</a></li>
+<li><a href="#metrics">Metrics</a></li>
+<li><a href="#logs">Logs</a></li>
+<li><a href="#backups-and-restore">Backups and restore</a></li>
+<li><a href="#compose">Compose</a></li>
+</ol>
+</nav>
+<p>How to run <code>sendbox-fleet</code> for a team. <a href="../development/">Development</a> covers
+local runs; this page covers a shared, production-like setup. Every setting
+here is an environment variable listed in
+<a href="../development/#configuration">development.md</a>.</p>
+<figure class="diagram">
+<pre tabindex="0"><code class="language-mermaid">flowchart LR
+    hosts[&quot;SendBox hosts and people&quot;] -- &quot;HTTPS&quot; --&gt; proxy[&quot;Reverse proxy&lt;br/&gt;(TLS, request limits)&quot;]
+    proxy -- &quot;HTTP on a private network&quot; --&gt; fleet[&quot;sendbox-fleet&lt;br/&gt;FLEET_MIGRATE=false&quot;]
+    fleet -- &quot;sendbox_fleet_app role&quot; --&gt; pg[(&quot;PostgreSQL&quot;)]
+    fleet -. &quot;JWKS over HTTPS&quot; .-&gt; idp[&quot;Identity providers&quot;]
+    fleet -- &quot;signed audit heads&quot; --&gt; anchors[(&quot;Write-once storage&quot;)]
+    prom[&quot;Prometheus&quot;] -- &quot;FLEET_METRICS_BIND&quot; --&gt; fleet</code></pre>
+<figcaption>Diagram source (Mermaid). <a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/docs/deployment.md">View it rendered on GitHub</a>.</figcaption>
+</figure>
+<h2 id="checklist">Checklist</h2>
+<ol>
+<li>PostgreSQL with the least-privilege roles below. SQLite is for development
+only.</li>
+<li>A reverse proxy that terminates TLS. The service itself speaks plain HTTP.</li>
+<li><code>FLEET_AUTHORITY_ID</code> set to the value every host puts under <code>authority:</code>.</li>
+<li><code>FLEET_PROFILE_TRUST</code> naming the operators who sign profiles.</li>
+<li><code>FLEET_OIDC_CONFIG</code> for people and CI, or admin-issued tokens only.</li>
+<li>An audit signing key and an anchor directory on storage the database
+administrators cannot rewrite.</li>
+<li>Metrics on a private address, log shipping from stdout or <code>FLEET_LOG_DIR</code>,
+and database backups.</li>
+</ol>
+<h2 id="tls-and-the-reverse-proxy">TLS and the reverse proxy</h2>
+<p>Bearer tokens must only travel over TLS. Run the service on a private address
+(<code>FLEET_BIND=10.0.0.5:8080</code>, or the Compose network) behind a proxy such as
+nginx, Caddy, Envoy, or a cloud load balancer that:</p>
+<ul>
+<li>terminates TLS 1.2 or later with a certificate hosts trust;</li>
+<li>forwards the <code>Authorization</code> header unchanged and adds no identity headers
+(the service ignores <code>X-Forwarded-User</code> and similar anyway);</li>
+<li>does not cache responses (token exchange already sends
+<code>Cache-Control: no-store</code>);</li>
+<li>limits request rates per client address.</li>
+</ul>
+<p>The service rate limits per process: <code>FLEET_RATE_LIMIT_PER_MINUTE</code> requests
+per authenticated principal, and <code>FLEET_AUTH_FAILURES_PER_MINUTE</code> failed
+authentications per peer address. Behind a proxy every client shares the
+proxy's address, so the failure limit throttles all clients together when one
+of them sends bad tokens. Either set <code>FLEET_AUTH_FAILURES_PER_MINUTE=0</code> and
+rely on the proxy's per-client limit, or raise it well above normal traffic.
+<code>X-Forwarded-For</code> is not trusted.</p>
+<p>Limits are per instance. With several instances, the effective limit is the
+per-instance value times the instance count.</p>
+<h2 id="postgresql-roles-and-migrations">PostgreSQL roles and migrations</h2>
+<p><a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/deploy/postgres/roles.sql"><code>deploy/postgres/roles.sql</code></a> creates two
+roles:</p>
+<div class="table-scroll" role="group" aria-label="PostgreSQL roles and migrations table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Role</th><th scope="col">Can</th></tr></thead>
+<tbody>
+<tr><td><code>sendbox_fleet_owner</code></td><td>Owns the schema; runs <code>sendbox-fleet admin migrate</code></td></tr>
+<tr><td><code>sendbox_fleet_app</code></td><td>Reads and writes operational tables; only <code>SELECT</code> and <code>INSERT</code> on <code>audit_events</code>; only <code>SELECT</code> on <code>_sqlx_migrations</code>; cannot create, alter, or drop anything</td></tr>
+</tbody>
+</table>
+</div>
+<pre tabindex="0"><code class="language-sh">psql -v ON_ERROR_STOP=1 -d sendbox_fleet -f deploy/postgres/roles.sql   # as a superuser
+psql -d sendbox_fleet -c &quot;ALTER ROLE sendbox_fleet_owner PASSWORD '…'&quot;
+psql -d sendbox_fleet -c &quot;ALTER ROLE sendbox_fleet_app PASSWORD '…'&quot;
+FLEET_DATABASE_URL=postgres://sendbox_fleet_owner:…@db/sendbox_fleet sendbox-fleet admin migrate
+psql -v ON_ERROR_STOP=1 -d sendbox_fleet -f deploy/postgres/roles.sql   # grants on the new tables</code></pre>
+<p>Then run the service as <code>sendbox_fleet_app</code> with <code>FLEET_MIGRATE=false</code>. It
+refuses to start while a migration is missing and names the fix. Admin
+commands run with <code>FLEET_MIGRATE=false</code> also check instead of migrating, so
+they work with the app role. On upgrade: stop the old version, run
+<code>admin migrate</code> as the owner, rerun <code>roles.sql</code>, then start the new version.</p>
+<p>The audit triggers stop the app role and anyone without <code>ALTER</code> on the table.
+The owner and superusers can still disable them, which is what audit
+anchoring is for.</p>
+<h2 id="identity-providers">Identity providers</h2>
+<p><code>FLEET_OIDC_CONFIG</code> points at a YAML file of trusted issuers. Without it, only
+service tokens from <code>sendbox-fleet admin token issue</code> authenticate.</p>
+<pre tabindex="0"><code class="language-yaml">issuers:
+  # People: the principal is `oidc:&lt;verified email&gt;`.
+  - issuer: https://accounts.google.com
+    audiences: [&quot;123456789-example.apps.googleusercontent.com&quot;]
+    kind: user
+    principal_claim: email
+    principal_prefix: oidc
+  # CI: GitHub Actions jobs from one organization, as `github-actions:&lt;repository_id&gt;`.
+  - issuer: https://token.actions.githubusercontent.com
+    audiences: [sendbox-fleet]
+    kind: worker
+    principal_claim: repository_id
+    principal_prefix: github-actions
+    required_claims:
+      repository_owner: example
+    auto_provision: true</code></pre>
+<div class="table-scroll" role="group" aria-label="Identity providers table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Field</th><th scope="col">Default</th><th scope="col">Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>issuer</code></td><td>required</td><td>Exact <code>iss</code>; <code>https://</code> (or <code>http://</code> on loopback for tests)</td></tr>
+<tr><td><code>audiences</code></td><td>required</td><td>At least one must appear in <code>aud</code></td></tr>
+<tr><td><code>kind</code></td><td>required</td><td><code>user</code> or <code>worker</code>; an existing principal of the other kind is refused</td></tr>
+<tr><td><code>principal_claim</code></td><td>required</td><td>Claim that names the principal; string or number</td></tr>
+<tr><td><code>principal_prefix</code></td><td>required</td><td>Unique per issuer, lowercase letters or <code>-</code>, not <code>local-user</code></td></tr>
+<tr><td><code>require_email_verified</code></td><td>true when the claim is <code>email</code></td><td>Require <code>email_verified: true</code></td></tr>
+<tr><td><code>auto_provision</code></td><td><code>false</code></td><td>Create unknown principals on first sign-in, with no roles and no operator flag, audited as <code>principal.provisioned</code></td></tr>
+<tr><td><code>jwks_uri</code></td><td>from discovery</td><td>Skip <code>/.well-known/openid-configuration</code></td></tr>
+<tr><td><code>algorithms</code></td><td><code>RS256</code>, <code>ES256</code>, <code>EdDSA</code></td><td>Accepted signature algorithms</td></tr>
+<tr><td><code>required_claims</code></td><td>none</td><td>Claims that must equal these strings</td></tr>
+<tr><td><code>jwks_cache_seconds</code></td><td><code>600</code></td><td>Key cache lifetime (60 to 86400)</td></tr>
+<tr><td><code>leeway_seconds</code></td><td><code>60</code></td><td>Clock skew for <code>exp</code>, <code>nbf</code>, and <code>iat</code> (at most 300)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Keys are fetched over HTTPS with the system CA bundle, without proxies or
+redirects, and cached. An unknown key id refreshes the key set at most every
+30 seconds. If keys cannot be fetched and none are cached, callers get <code>503</code>;
+cached keys keep working through an outage.</p>
+<p>Keep <code>auto_provision</code> off for people unless anyone who can sign in to the
+provider may hold a principal; roles still have to be granted per project.
+For CI, <code>required_claims</code> is what limits which repositories can sign in.</p>
+<h3 id="signing-in-from-a-sendbox-host">Signing in from a SendBox host</h3>
+<p>A JWT from a configured issuer authenticates any <code>/v1</code> call directly, but
+provider tokens are short-lived. Hosts exchange one for a fleet service token:</p>
+<pre tabindex="0"><code class="language-sh">my-idp print-id-token | sendbox governance login</code></pre>
+<p><code>POST /v1/tokens</code> accepts only identity-provider callers, so a leaked service
+token cannot mint more. Exchanged tokens last <code>FLEET_TOKEN_TTL_SECONDS</code>
+(12 hours) unless the request asks for less or up to
+<code>FLEET_TOKEN_MAX_TTL_SECONDS</code> (7 days); a principal holds at most 20 live
+tokens. <code>GET /v1/tokens</code> lists the caller's tokens and
+<code>DELETE /v1/tokens/{id}</code> revokes one; operators can revoke any token.</p>
+<p>In GitHub Actions, request an ID token with the fleet's audience (the job
+needs <code>permissions: id-token: write</code>), then pass it to <code>sendbox governance login --identity-token-file</code>.</p>
+<h2 id="audit-anchoring">Audit anchoring</h2>
+<p>The audit chain detects edits by anyone who cannot recompute every later hash.
+A database owner can. Anchors fix that: a signed copy of the chain head, kept
+where the database administrators cannot rewrite it.</p>
+<pre tabindex="0"><code class="language-sh">sendbox-fleet admin audit keygen --output /etc/sendbox-fleet/audit.key &gt; audit-identity.json</code></pre>
+<p>The key file is created with mode <code>0600</code>; the service refuses to load a key
+that group or others can access. Keep it off the database host and out of database backups; publish
+<code>audit-identity.json</code> to whoever verifies the log.</p>
+<div class="table-scroll" role="group" aria-label="Audit anchoring table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Setting</th><th scope="col">Effect</th></tr></thead>
+<tbody>
+<tr><td><code>FLEET_AUDIT_SIGNING_KEY</code></td><td>Enables <code>GET /v1/audit/head</code> (operators): the current head, signed</td></tr>
+<tr><td><code>FLEET_AUDIT_ANCHOR_DIR</code></td><td>Writes <code>audit-head-&lt;sequence&gt;.json</code> there at startup and every <code>FLEET_AUDIT_ANCHOR_INTERVAL_SECONDS</code> (default 3600) when the chain has advanced</td></tr>
+</tbody>
+</table>
+</div>
+<p>Point <code>FLEET_AUDIT_ANCHOR_DIR</code> at write-once storage, such as an object-store
+bucket with object lock mounted into the container, or a directory another
+system collects. Anchors are never overwritten. Without a mounted directory,
+an external job can call <code>GET /v1/audit/head</code> or run
+<code>sendbox-fleet admin audit anchor --output DIR</code>.</p>
+<p>To check the log:</p>
+<pre tabindex="0"><code class="language-sh">sendbox-fleet admin audit verify --identity audit-identity.json \
+  --anchor anchors/audit-head-00000000000000001234.json …</code></pre>
+<p>It recomputes the chain and checks that each anchor's signature verifies and
+that the database still holds the anchored hash at that sequence. It prints
+one JSON line per result and exits non-zero on any failure.</p>
+<h2 id="metrics">Metrics</h2>
+<p>Set <code>FLEET_METRICS_BIND</code> (for example <code>10.0.0.5:9090</code>) to serve Prometheus
+text at <code>/metrics</code> on a second listener. It has no authentication, so keep it
+on a private network; it is never served on <code>FLEET_BIND</code>.</p>
+<div class="table-scroll" role="group" aria-label="Metrics table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Metric</th><th scope="col">Type</th><th scope="col">Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>fleet_http_requests_total{class}</code></td><td>counter</td><td>Requests by status class (<code>2xx</code>, <code>4xx</code>, …)</td></tr>
+<tr><td><code>fleet_http_request_duration_seconds_sum</code> / <code>_count</code></td><td>summary</td><td>Request time</td></tr>
+<tr><td><code>fleet_auth_failures_total</code></td><td>counter</td><td>Rejected bearer tokens</td></tr>
+<tr><td><code>fleet_rate_limited_total</code></td><td>counter</td><td><code>429</code> answers</td></tr>
+<tr><td><code>fleet_authorization_decisions_total{decision,reason}</code></td><td>counter</td><td><code>/v1/authorize</code> results by deny reason</td></tr>
+<tr><td><code>fleet_audit_events_total</code></td><td>counter</td><td>Events appended by this process</td></tr>
+<tr><td><code>fleet_audit_sequence</code></td><td>gauge</td><td>Highest audit sequence</td></tr>
+</tbody>
+</table>
+</div>
+<p>Labels never contain principals, projects, sessions, or tokens. Useful alerts:
+a rising <code>5xx</code> rate, <code>fleet_auth_failures_total</code> spikes, and
+<code>fleet_authorization_decisions_total{reason=&quot;authority_unavailable&quot;}</code>.</p>
+<h2 id="logs">Logs</h2>
+<p>Logs go to stdout and <code>FLEET_LOG_DIR</code>. Files rotate at UTC midnight and when
+they reach <code>FLEET_LOG_MAX_BYTES</code> (100 MiB), and are pruned after
+<code>FLEET_LOG_RETENTION_DAYS</code>. In containers, ship stdout and keep the volume
+small. See <a href="../development/#logs">development.md</a>.</p>
+<h2 id="backups-and-restore">Backups and restore</h2>
+<ul>
+<li><strong>PostgreSQL</strong>: <code>pg_dump --format=custom sendbox_fleet</code> on a schedule, or
+continuous archiving for point-in-time recovery. Store dumps encrypted and
+away from the database host.</li>
+<li><strong>SQLite</strong> (development only): <code>sqlite3 sendbox-fleet.db &quot;.backup copy.db&quot;</code>
+while the service runs.</li>
+<li>Back up <code>FLEET_PROFILE_TRUST</code>, <code>FLEET_OIDC_CONFIG</code>, and the audit identity
+with the deployment configuration. Back up the audit signing key separately.</li>
+</ul>
+<p>The database holds token digests, not tokens, so a restored backup cannot be
+used to sign in. Tokens revoked after the backup become valid again after a
+restore, as do principals disabled after it: revoke and disable them again.</p>
+<p>After a restore, run <code>sendbox-fleet admin audit verify</code> with the newest
+anchors. Anchors newer than the backup fail with &quot;the database no longer
+holds this sequence&quot;, which documents exactly what the restore lost.</p>
+<h2 id="compose">Compose</h2>
+<p><a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/docker-compose.yml"><code>docker-compose.yml</code></a> passes every setting through
+from <code>.env</code> and mounts a <code>fleet-anchors</code> volume at
+<code>/var/lib/sendbox-fleet/anchors</code>. Mount the trust file, OIDC file, and audit
+key with an override file:</p>
+<pre tabindex="0"><code class="language-yaml"># docker-compose.override.yml
+services:
+  fleet:
+    environment:
+      FLEET_PROFILE_TRUST: /etc/sendbox-fleet/profile-trust.yaml
+      FLEET_OIDC_CONFIG: /etc/sendbox-fleet/oidc.yaml
+      FLEET_AUDIT_SIGNING_KEY: /run/sendbox-fleet/audit.key
+      FLEET_AUDIT_ANCHOR_DIR: /var/lib/sendbox-fleet/anchors
+    volumes:
+      - ./config:/etc/sendbox-fleet:ro
+      - ./audit-key:/run/sendbox-fleet:ro</code></pre>
+<p>The service runs as uid 10001, so <code>./audit-key/audit.key</code> must be owned by
+that uid with mode <code>0600</code> or <code>0400</code>.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox-fleet/blob/962a6cf18913e41995dfde12c872be9497d2b1e9/docs/deployment.md"><code>docs/deployment.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox-fleet">sendbox-dev/sendbox-fleet</a> at commit <a href="https://github.com/sendbox-dev/sendbox-fleet/commit/962a6cf18913e41995dfde12c872be9497d2b1e9"><code>962a6cf</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox-fleet/edit/main/docs/deployment.md">edit it in sendbox-dev/sendbox-fleet</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../overview/"><span class="pager-label">Previous</span> Overview and quick start</a>
+<a class="pager-next" href="../architecture/"><span class="pager-label">Next</span> Architecture</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox Fleet documentation">
+<p class="nav-project"><a href="../">SendBox Fleet docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../overview/">Overview and quick start</a></li>
+<li><a href="./" aria-current="page">Deployment</a></li>
+<li><a href="../architecture/">Architecture</a></li>
+<li><a href="../contract/">Shared contract</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../threat-model/">Threat model</a></li>
+<li><a href="../security-policy/">Reporting vulnerabilities</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../contributing/">Contributing</a></li>
+<li><a href="../development/">Development</a></li>
+<li><a href="../roadmap/">Roadmap</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>

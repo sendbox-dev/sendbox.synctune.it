@@ -1,0 +1,4 @@
+node_modules/
+.vendor-sync-*/
+.site-check-*/
+.DS_Store

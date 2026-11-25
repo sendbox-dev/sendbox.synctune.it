@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session security lifecycle | SendBox docs</title>
+  <meta name="description" content="sendbox-session-security is the adapter-neutral coordination layer between sendbox-security, sendbox-secrets, and host orchestration. It does not directly…">
+  <meta name="theme-color" content="#14161B">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="SendBox">
+  <meta property="og:title" content="Session security lifecycle | SendBox docs">
+  <meta property="og:description" content="sendbox-session-security is the adapter-neutral coordination layer between sendbox-security, sendbox-secrets, and host orchestration. It does not directly…">
+  <meta property="og:url" content="https://sendbox.synctune.it/sendbox/architecture/session-security-lifecycle/">
+  <link rel="canonical" href="https://sendbox.synctune.it/sendbox/architecture/session-security-lifecycle/">
+  <link rel="icon" href="../../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../../assets/styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="../../../"><img src="../../../assets/logos/sendbox.svg" alt="" width="32" height="32"><span>SendBox</span></a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="../../" class="is-active">SendBox docs</a></li>
+        <li><a href="../../../fleet/">Fleet docs</a></li>
+        <li><a href="../../../contribute/">Contribute</a></li>
+        <li><a href="https://github.com/sendbox-dev">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="wrap docs-layout">
+<main id="main" class="docs-main">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+<ol>
+<li><a href="../../../">Home</a></li>
+<li><a href="../../">SendBox docs</a></li>
+<li><span aria-current="page">Session security lifecycle</span></li>
+</ol>
+</nav>
+<a class="docs-menu-link" href="#docs-nav">All SendBox docs</a>
+<article class="prose">
+<header class="doc-header">
+<p class="eyebrow">SendBox · Architecture</p>
+<h1 id="session-security-lifecycle">Session security lifecycle</h1>
+</header>
+<nav class="toc" aria-label="On this page">
+<p class="toc-title">On this page</p>
+<ol>
+<li><a href="#lifecycle">Lifecycle</a></li>
+<li><a href="#permission-supervisor">Permission supervisor</a></li>
+<li><a href="#migration">Migration</a></li>
+<li><a href="#production-integration">Production integration</a></li>
+</ol>
+</nav>
+<p><code>sendbox-session-security</code> is the adapter-neutral coordination layer between
+<code>sendbox-security</code>, <code>sendbox-secrets</code>, and host orchestration. It does not
+directly start a runtime or change guest controls; <code>sendbox-host</code> injects the
+runtime-independent adapters and executes the lifecycle around persistent Apple
+and Kata sessions.</p>
+<h2 id="lifecycle">Lifecycle</h2>
+<p><code>SecuritySession::prepare</code> runs the security prerequisites in this order:</p>
+<ol>
+<li>Verify policy and configuration bytes against injected trust stores.</li>
+<li>Capture the before-state snapshot.</li>
+<li>Create the session audit chain using the canonical <code>SessionId</code> hex value.</li>
+<li>Validate secret references and produce authenticated, session-bound envelopes.</li>
+<li>Prepare credential rules and notify an injected bounded listener.</li>
+<li>Initialize the injected permission supervisor and anchor its generation and
+state hash in the audit chain.</li>
+</ol>
+<p>Runtime-independent callers can then record audit events through the thread-safe
+<code>AuditRecorder</code>. Completion and failure finalization capture the after-state,
+compute the snapshot diff, record rollback and cleanup outcomes, and publish the
+final audit Merkle root and chain head through an injected signing/publication
+hook.</p>
+<p>Any failed preparation or finalization stage attempts rollback and cleanup. The
+returned error retains the primary, rollback, cleanup, audit, and publication
+failures that occurred; failures are not converted into success-shaped results.</p>
+<h2 id="permission-supervisor">Permission supervisor</h2>
+<p>The version 1 permission supervisor preserves the Swift categories and risk
+classification intent while making decisions replay-safe and deterministic:</p>
+<ul>
+<li>categories: command, network, file write, secret access, and system call;</li>
+<li>one-time, session, and glob-pattern approvals;</li>
+<li>expiry and use limits;</li>
+<li>exact deny-always rules with deny-first precedence;</li>
+<li>prompt budgets, non-interactive denial, and injected approval handlers;</li>
+<li>caller-clock deadline checks without UI or real-time sleeps;</li>
+<li>revocation and bounded decision history.</li>
+</ul>
+<p>The default, strict, and autonomous configurations retain the Swift prompt
+budgets, session-grant flags, timeout values, and autonomous wildcard rules. A
+zero timeout disables deadline expiry. When session grants are disabled,
+<code>approveForSession</code> falls back to the Swift one-time behavior. That behavior
+records the current approval and creates one exact-action use for the next
+matching check.</p>
+<p><code>denyAlways</code> is the intentional redesign exception: Swift only recorded the
+denial and would prompt again. Rust persists an exact deny rule, checks it before
+positive grants, and requires explicit revocation. This strengthens denial
+without broadening permission.</p>
+<p>Canonical JSON state includes the session ID, generation, previous state hash,
+current state hash, grants, deny rules, replay set, prompt counters, and history.
+Every mutation advances the generation and is emitted through a
+<code>PermissionEventSink</code>. <code>AuditPermissionEventSink</code> records the generation and
+state hash in the session audit chain.</p>
+<p><code>SharedPermissionSupervisor</code> serializes only non-interactive checks so use-limited
+grant consumption remains atomic without holding a mutex across an approval
+handler. Interactive approval remains owned by the orchestration layer.</p>
+<p>The supervisor checkpoint is an external high-water mark. Loading an older
+generation, an equivocated state at the same generation, an unlinked next
+generation, or a generation jump is rejected. The checkpoint must be stored
+outside the supervisor file, normally in the tamper-evident audit publication.</p>
+<h2 id="migration">Migration</h2>
+<p>Migration inspection is bounded and dry-run-only. Readers cover:</p>
+<div class="table-scroll" role="group" aria-label="Migration table" tabindex="0">
+<table>
+<thead><tr><th scope="col">Source</th><th scope="col">Verification/report behavior</th></tr></thead>
+<tbody>
+<tr><td>Swift audit entries and Merkle tree</td><td>Verifies the legacy hash chain and optional tree</td></tr>
+<tr><td>Swift snapshot manifest</td><td>Validates ordering, paths, hashes, sizes, and permissions</td></tr>
+<tr><td>Swift provenance trust store</td><td>Reports unsigned or zero-threshold policy broadening</td></tr>
+<tr><td>Swift provenance signature</td><td>Validates structure; cryptographic verification still requires caller content and key</td></tr>
+<tr><td>Secret metadata</td><td>Lists record versions without retrieving or rewriting values</td></tr>
+<tr><td>Swift Codable grants</td><td>Observational import reader; no persisted Swift grant store is assumed</td></tr>
+</tbody>
+</table>
+</div>
+<p>Conversion proposals require an authorization derived from the exact dry-run
+report. Permission-broadening proposals also require a separate explicit
+acknowledgement. These APIs never write artifacts, migrate secrets, or weaken
+permissions automatically.</p>
+<h2 id="production-integration">Production integration</h2>
+<p><code>sendbox-host</code> validates that state and workspace roots are disjoint, then
+prepares this lifecycle before runtime execution. The production adapter
+persists supervisor checkpoints, signs audit publication, captures and verifies
+snapshots, restores eligible mutations on failure, and quarantines changed
+excluded cache/dependency entries. Runtime cleanup still runs when security
+finalization fails, and all primary, rollback, audit, publication, and cleanup
+failures remain visible.</p>
+<p><a href="../governed-sessions/#audit">Governed sessions</a> append governance admission
+and credential grant and request records to the same signed audit chain. Each
+record names the profile revision and the binding digest signed into the
+boundary plan, and never includes credential material. A failure to record
+relay evidence fails the run. A session that lifted a policy exception is
+stopped when the exception expires, which follows the normal cancellation and
+rollback path.</p>
+</article>
+<aside class="source-note" aria-label="Page source">
+<p>Published from <a href="https://github.com/sendbox-dev/sendbox/blob/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9/docs/architecture/session-security-lifecycle.md"><code>docs/architecture/session-security-lifecycle.md</code></a> in <a href="https://github.com/sendbox-dev/sendbox">sendbox-dev/sendbox</a> at commit <a href="https://github.com/sendbox-dev/sendbox/commit/fe05a0d84ca36fbffa3892d7705ee4ba8ed08eb9"><code>fe05a0d</code></a>. To change this page, <a href="https://github.com/sendbox-dev/sendbox/edit/main/docs/architecture/session-security-lifecycle.md">edit it in sendbox-dev/sendbox</a>; the site picks it up on the next sync.</p>
+</aside>
+<nav class="pager" aria-label="Previous and next page">
+<a class="pager-previous" href="../authenticated-guest-protocol/"><span class="pager-label">Previous</span> Authenticated guest protocol</a>
+<a class="pager-next" href="../egress-enforcement/"><span class="pager-label">Next</span> Egress enforcement</a>
+</nav>
+</main>
+<nav class="docs-nav" id="docs-nav" aria-label="SendBox documentation">
+<p class="nav-project"><a href="../../">SendBox docs</a></p>
+<h2 class="nav-heading">Get started</h2>
+<ul>
+<li><a href="../../overview/">Overview and quick start</a></li>
+<li><a href="../../installation/">Installation</a></li>
+<li><a href="../../configuration/">Configuration</a></li>
+<li><a href="../../cli-reference/">CLI reference</a></li>
+<li><a href="../../interactive-sessions/">Interactive sessions</a></li>
+<li><a href="../../cli-agents/">CLI agents</a></li>
+<li><a href="../../integrations/">Integrations</a></li>
+<li><a href="../../similar-tools/">Similar tools</a></li>
+</ul>
+<h2 class="nav-heading">Runtimes and operations</h2>
+<ul>
+<li><a href="../../apple-runtime/">Apple runtime</a></li>
+<li><a href="../../kata-containers/">Kata Containers</a></li>
+<li><a href="../../hyperlight/">Hyperlight</a></li>
+<li><a href="../../dns-cold-start/">Cold-start DNS diagnostics</a></li>
+<li><a href="../../package-supply-chain/">Package supply-chain proxy</a></li>
+<li><a href="../../mcp-inspection/">MCP inspection</a></li>
+</ul>
+<h2 class="nav-heading">Security</h2>
+<ul>
+<li><a href="../../security-model/">Security model</a></li>
+<li><a href="../../security-policy/">Reporting vulnerabilities</a></li>
+<li><a href="../../egress-trust-boundary/">Egress trust boundary</a></li>
+<li><a href="../../secrets-migration/">Secrets migration</a></li>
+<li><a href="../../security-records-migration/">Security-record migration</a></li>
+</ul>
+<h2 class="nav-heading">Contribute</h2>
+<ul>
+<li><a href="../../contributing/">Contributing</a></li>
+<li><a href="../../qualification/">Qualification</a></li>
+<li><a href="../../roadmap/">Roadmap</a></li>
+</ul>
+<h2 class="nav-heading">Architecture</h2>
+<ul>
+<li><a href="../runtime-core/">Runtime core</a></li>
+<li><a href="../execution-broker/">Execution broker</a></li>
+<li><a href="../guest-supervisor/">Guest supervisor</a></li>
+<li><a href="../guest-artifact-bundles/">Guest artifact bundles</a></li>
+<li><a href="../interactive-terminal/">Interactive terminal</a></li>
+<li><a href="../kata-runtime/">Kata runtime</a></li>
+<li><a href="../authenticated-guest-protocol/">Authenticated guest protocol</a></li>
+<li><a href="./" aria-current="page">Session security lifecycle</a></li>
+<li><a href="../egress-enforcement/">Egress enforcement</a></li>
+<li><a href="../mcp-broker/">MCP broker</a></li>
+<li><a href="../package-registry-proxy/">Package registry proxy</a></li>
+<li><a href="../secrets-and-credential-broker/">Secrets and credential broker</a></li>
+<li><a href="../governed-sessions/">Governed sessions</a></li>
+<li><a href="../git-branch-guard/">Git branch guard</a></li>
+<li><a href="../safe-outputs/">Safe Outputs</a></li>
+<li><a href="../security-records/">Security records</a></li>
+<li><a href="../agent-orchestration/">Agent orchestration</a></li>
+<li><a href="../native-project-analysis/">Native project analysis</a></li>
+<li><a href="../rust-cli-parity/">Rust CLI</a></li>
+</ul>
+</nav>
+</div>
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <p>SendBox and SendBox Fleet are open source under the Apache License 2.0, built in the open by <a href="https://open.synctune.it">Synctune Open</a>.</p>
+    <p>This site sets no cookies and loads no scripts, analytics or third-party resources. <a href="https://github.com/sendbox-dev/sendbox.synctune.it">Website source</a> · <a href="../../../contribute/">Contribute</a></p>
+  </div>
+</footer>
+</body>
+</html>
